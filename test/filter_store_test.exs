@@ -75,9 +75,9 @@ defmodule Sentinel.Probe.SDK.FilterStoreTest do
     FilterStore.delete(struct(FilterStore, key: key(:refresh_no_filter)))
   end
 
-  test "should_refresh: nil new epoch means do not refresh" do
+  test "should_refresh: no filter held with nil epoch means refresh" do
     store = new_store(:refresh_nil)
-    assert FilterStore.should_refresh(store, nil) == false
+    assert FilterStore.should_refresh(store, nil) == true
   after
     FilterStore.delete(struct(FilterStore, key: key(:refresh_nil)))
   end

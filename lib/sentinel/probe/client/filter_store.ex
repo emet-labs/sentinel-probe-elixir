@@ -103,12 +103,10 @@ defmodule Sentinel.Probe.SDK.Client.FilterStore do
   to compare against, so do not refresh.
   """
   @spec should_refresh(t(), non_neg_integer() | nil) :: boolean()
-  def should_refresh(%__MODULE__{}, nil), do: false
-
   def should_refresh(%__MODULE__{} = store, new_epoch) do
     case epoch(store) do
       nil -> true
-      held -> new_epoch != held
+      held -> new_epoch != nil and new_epoch != held
     end
   end
 
