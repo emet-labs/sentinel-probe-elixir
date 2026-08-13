@@ -1,9 +1,57 @@
-# Elixir-only codegen for the Probe SDK. The generated tree is gitignored and
-# must not clean or rewrite the canonical committed bindings under gen/rust.
+# sdk/elixir/buf.gen.elixir.yaml — Elixir-only codegen for the Probe SDK.
+#
+# Deliberately NOT the repo-root buf.gen.yaml, for the same two reasons every sibling SDK
+# forked away from it (sdk/go/buf.gen.go.yaml:3-6, sdk/typescript/buf.gen.typescript.yaml:2-4,
+# sdk/jvm/buf.gen.jvm.yaml:3-6, sdk/python/buf.gen.python.yaml:3-7), and one that is specific
+# to Elixir:
+#
+#   1. clean: false. The root template sets `clean: true` and emits into `gen/rust`, which is a
+#      COMMITTED tree. buf's clean phase wipes each plugin's `out:` directory before writing,
+#      and gen/rust/sentinel.file_descriptor_set.binpb is NOT produced by `buf generate` at all
+#      — it comes from `buf build --as-file-descriptor-set` in tools/generate-probes.sh. Running
+#      the root template on a gate path therefore deletes a committed file that nothing in that
+#      path recreates, and model/src/wire.rs `include_bytes!`s it, so `cargo build` hard-fails.
+#      README.md's "only generated Rust storage is committed so sentinel-model compiles without
+#      invoking a generator in canonical gates" is the invariant this preserves.
+#   2. One language, not six. The root template pulls six BSR remote plugins; this gate needs
+#      one. That keeps `resource_exhausted` off the critical path (see the Justfile's ORDERING
+#      note) — and since the only plugin here is local, the Elixir gate needs NO network at all.
+#   3. Elixir is the SDK that owns the local plugin. `.tools/protoc-gen-elixir` is gitignored
+#      and built from source by tools/build-protoc-gen-elixir.sh, which
+#      tools/generate-elixir-sdk.sh invokes immediately before running this template. The
+#      siblings each cite "no dependency on the gitignored .tools/protoc-gen-elixir binary" as
+#      a reason they forked; this template is where that dependency legitimately lives.
+#
+# `managed:` below is copied VERBATIM from buf.gen.yaml:3-15 so the CodeGeneratorRequest handed
+# to protoc-gen-elixir is byte-identical to the one the root template produces. None of those
+# overrides affects Elixir module naming (the plugin derives modules from the proto `package`),
+# so this is belt-and-braces — but it is what makes the output provably unchanged by the fork.
+#
+# Output goes straight to sdk/elixir/gen (gitignored, see sdk/elixir/.gitignore:3) rather than
+# via .generated/elixir. protoc-gen-elixir writes <pkg-path>/<file>.pb.ex relative to `out:`,
+# so the on-disk layout is identical to the old copy-from-.generated/elixir hop. Generated
+# Elixir is NEVER committed, matching sdk/go/gen/ and sdk/python/gen/.
 version: v2
-clean: true
+clean: false
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/emet-labs/sentinel/gen/go
+    - file_option: java_package_prefix
+      value: dev.emet
+    - file_option: csharp_namespace
+      value: Emet.Sentinel.Model.V1
+      path: sentinel/model/v1
+    - file_option: csharp_namespace
+      value: Emet.Sentinel.Probe.V1
+      path: sentinel/probe/v1
 inputs:
   - directory: proto
 plugins:
+  # Buf's official remote catalog has no Elixir generator. This exact upstream release is built
+  # from source by tools/build-protoc-gen-elixir.sh, which tools/generate-elixir-sdk.sh runs
+  # before invoking this template. The path is relative to the repository root, which is where
+  # that script cds before calling buf.
   - local: .tools/protoc-gen-elixir
     out: sdk/elixir/gen
