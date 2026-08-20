@@ -1,0 +1,9 @@
+# Elixir-only codegen for the Probe SDK. The generated tree is gitignored and
+# must not clean or rewrite the canonical committed bindings under gen/rust.
+version: v2
+clean: true
+inputs:
+  - directory: proto
+plugins:
+  - local: .tools/protoc-gen-elixir
+    out: sdk/elixir/gen
