@@ -18,7 +18,12 @@ defmodule Sentinel.Probe.SDK.ConformanceVectorsTest do
 
   test "manifest suite registry fails closed" do
     manifest = @root |> Path.join("manifest-v1.json") |> File.read!() |> Jason.decode!()
-    assert Enum.map(manifest["suites"], & &1["kind"]) == ["spec_match", "int128", "enforcement_gate"]
+
+    assert Enum.map(manifest["suites"], & &1["kind"]) == [
+             "spec_match",
+             "int128",
+             "enforcement_gate"
+           ]
   end
 
   test "shared malformed corpus is rejected by category" do
@@ -38,12 +43,23 @@ defmodule Sentinel.Probe.SDK.ConformanceVectorsTest do
       value = Jason.decode!(raw)
 
       cond do
-        value["format_version"] != "1.0.0" -> "version"
-        not Map.has_key?(value, "cases") -> "missing-field"
-        Enum.any?(Map.keys(value), &(&1 not in ["format_version", "kind", "cases"])) -> "unknown-field"
-        value["kind"] not in ["spec_match", "int128", "enforcement_gate"] -> "unknown-token"
-        value["kind"] == "int128" -> malformed_int128_category(value["cases"])
-        true -> "accepted"
+        value["format_version"] != "1.0.0" ->
+          "version"
+
+        not Map.has_key?(value, "cases") ->
+          "missing-field"
+
+        Enum.any?(Map.keys(value), &(&1 not in ["format_version", "kind", "cases"])) ->
+          "unknown-field"
+
+        value["kind"] not in ["spec_match", "int128", "enforcement_gate"] ->
+          "unknown-token"
+
+        value["kind"] == "int128" ->
+          malformed_int128_category(value["cases"])
+
+        true ->
+          "accepted"
       end
     end
   end
@@ -53,8 +69,12 @@ defmodule Sentinel.Probe.SDK.ConformanceVectorsTest do
     decimal = ~r/^(0|-?[1-9][0-9]*)$/
 
     cond do
-      length(Enum.uniq(ids)) != length(ids) -> "duplicate-id"
-      Enum.any?(cases, fn item -> Enum.any?(["value", "high", "low"], &(not (item[&1] =~ decimal))) end) ->
+      length(Enum.uniq(ids)) != length(ids) ->
+        "duplicate-id"
+
+      Enum.any?(cases, fn item ->
+        Enum.any?(["value", "high", "low"], &(not (item[&1] =~ decimal)))
+      end) ->
         "integer-lexeme"
 
       Enum.any?(cases, fn item ->
@@ -118,8 +138,12 @@ defmodule Sentinel.Probe.SDK.ConformanceVectorsTest do
 
     for vector <- suite["cases"] do
       accepted =
-        Map.new(vector["filter"] && vector["filter"]["specifications"] || [], fn fixture ->
-          mode = if fixture["accepted_fail_mode"] == "closed", do: :FAIL_MODE_CLOSED, else: :FAIL_MODE_OPEN
+        Map.new((vector["filter"] && vector["filter"]["specifications"]) || [], fn fixture ->
+          mode =
+            if fixture["accepted_fail_mode"] == "closed",
+              do: :FAIL_MODE_CLOSED,
+              else: :FAIL_MODE_OPEN
+
           {fixture["id"], mode}
         end)
 
@@ -129,13 +153,18 @@ defmodule Sentinel.Probe.SDK.ConformanceVectorsTest do
             Enum.map(vector["filter"]["specifications"], fn fixture ->
               %SpecificationFilter{
                 specification_id: fixture["id"],
-                fail_mode: if(fixture["fail_mode"] == "closed", do: :FAIL_MODE_CLOSED, else: :FAIL_MODE_OPEN),
+                fail_mode:
+                  if(fixture["fail_mode"] == "closed", do: :FAIL_MODE_CLOSED, else: :FAIL_MODE_OPEN),
                 evaluation_mode: :EVALUATION_MODE_ENFORCE,
                 readiness: :READINESS_ACTIVE,
                 latency_budget_nanoseconds: String.to_integer(fixture["latency_budget_ns"]),
                 event_match: %EventMatch{
                   event_kinds: fixture["event_kinds"],
-                  delivery_mode: if(fixture["delivery_mode"] == "ask_and_block", do: :DELIVERY_MODE_ASK_AND_BLOCK, else: :DELIVERY_MODE_SHIP_ASYNC)
+                  delivery_mode:
+                    if(fixture["delivery_mode"] == "ask_and_block",
+                      do: :DELIVERY_MODE_ASK_AND_BLOCK,
+                      else: :DELIVERY_MODE_SHIP_ASYNC
+                    )
                 }
               }
             end)
@@ -163,7 +192,10 @@ defmodule Sentinel.Probe.SDK.ConformanceVectorsTest do
       decide = fn request ->
         Process.put({key, :requests}, [request | Process.get({key, :requests})])
         result = vector["decider"]["result"]
-        if result == "transport_error", do: {:error, "fixture-transport-error"}, else: {:ok, %DecideResponse{action: actions[result]}}
+
+        if result == "transport_error",
+          do: {:error, "fixture-transport-error"},
+          else: {:ok, %DecideResponse{action: actions[result]}}
       end
 
       outcome =
@@ -176,11 +208,18 @@ defmodule Sentinel.Probe.SDK.ConformanceVectorsTest do
             now_monotonic_ns: clock,
             accepted_fail_mode_for: fn spec -> Map.fetch!(accepted, spec.specification_id) end
           },
-          %Gate.Options{source_handle: "fixture-source", request_id: "fixture-request", idempotency_key: "fixture-idempotency"}
+          %Gate.Options{
+            source_handle: "fixture-source",
+            request_id: "fixture-request",
+            idempotency_key: "fixture-idempotency"
+          }
         )
 
       assert Gate.kind_to_string(outcome.kind) == vector["expected"]["kind"], vector["id"]
-      assert length(Process.get({key, :requests})) == vector["expected"]["decide_calls"], vector["id"]
+
+      assert length(Process.get({key, :requests})) == vector["expected"]["decide_calls"],
+             vector["id"]
+
       assert Process.get({key, :read_count}) == length(vector["clock_reads_ns"]), vector["id"]
       assert Process.get({key, :reads}) == []
     end
