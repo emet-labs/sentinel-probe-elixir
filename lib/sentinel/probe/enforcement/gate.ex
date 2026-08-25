@@ -183,24 +183,27 @@ defmodule Sentinel.Probe.SDK.Enforcement.Gate do
       else
         anchor = deps.now_monotonic_ns.()
         specification_budget = Enum.min(budgets)
-        caller_budget = if deadline_ns == nil, do: specification_budget, else: Budget.monotonic_delta_ns(anchor, deadline_ns) || 0
+        caller_budget =
+          if deadline_ns == nil,
+            do: specification_budget,
+            else: Budget.monotonic_delta_ns(anchor, deadline_ns) || 0
         effective_budget = min(specification_budget, caller_budget)
         remaining = Budget.remaining_budget_ns(anchor, effective_budget, deps.now_monotonic_ns.())
         if remaining == 0 do
           apply_fail_mode(aggregate_fail_mode, "budget-exhausted", filter_epoch, nil)
         else
-          ask(event, filter_epoch, {anchor, effective_budget}, aggregate_fail_mode, remaining, deps, options)
+          ask(
+            event,
+            filter_epoch,
+            {anchor, effective_budget},
+            aggregate_fail_mode,
+            remaining,
+            deps,
+            options
+          )
         end
       end
     end
-  end
-
-  defp remaining_budget(nil, _deps), do: nil
-
-  defp remaining_budget(deadline_ns, deps) do
-    remaining = Budget.remaining_transport_budget_ns(deadline_ns, deps.now_monotonic_ns.())
-
-    if remaining == 0, do: :exhausted, else: remaining
   end
 
   defp ask(event, filter_epoch, budget_state, aggregate_fail_mode, remaining_budget, deps, options) do
