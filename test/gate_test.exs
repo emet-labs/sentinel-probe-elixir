@@ -322,7 +322,7 @@ defmodule Sentinel.Probe.SDK.GateTest do
     assert req.remaining_transport_budget_nanoseconds == 7000
   end
 
-  test "without a budget, a permit permits" do
+  test "without a caller budget, the Specification budget is sent" do
     mock = MockDecider.new(response: make_response(:DECISION_ACTION_PERMIT))
 
     outcome =
@@ -334,9 +334,10 @@ defmodule Sentinel.Probe.SDK.GateTest do
       )
 
     assert outcome.kind == :permit
+    assert MockDecider.last_request().remaining_transport_budget_nanoseconds == 10_000
   end
 
-  test "without a budget, defer defers indefinitely" do
+  test "without a caller budget, defer uses the Specification budget" do
     mock = MockDecider.new(response: make_response(:DECISION_ACTION_DEFER))
 
     outcome =
