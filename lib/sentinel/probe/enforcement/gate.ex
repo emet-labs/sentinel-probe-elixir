@@ -178,17 +178,21 @@ defmodule Sentinel.Probe.SDK.Enforcement.Gate do
       aggregate_fail_mode = compute_aggregate_fail_mode(enforcing, deps)
 
       budgets = Enum.map(enforcing, & &1.latency_budget_nanoseconds)
+
       if Enum.any?(budgets, &(&1 in [nil, 0])) do
         apply_fail_mode(aggregate_fail_mode, "budget-exhausted", filter_epoch, nil)
       else
         anchor = deps.now_monotonic_ns.()
         specification_budget = Enum.min(budgets)
+
         caller_budget =
           if deadline_ns == nil,
             do: specification_budget,
             else: Budget.monotonic_delta_ns(anchor, deadline_ns) || 0
+
         effective_budget = min(specification_budget, caller_budget)
         remaining = Budget.remaining_budget_ns(anchor, effective_budget, deps.now_monotonic_ns.())
+
         if remaining == 0 do
           apply_fail_mode(aggregate_fail_mode, "budget-exhausted", filter_epoch, nil)
         else
@@ -249,6 +253,7 @@ defmodule Sentinel.Probe.SDK.Enforcement.Gate do
 
       :DECISION_ACTION_DEFER ->
         {anchor, budget} = deadline_ns
+
         if Budget.remaining_budget_ns(anchor, budget, deps.now_monotonic_ns.()) > 0 do
           %__MODULE__{
             kind: :defer,
@@ -304,7 +309,13 @@ defmodule Sentinel.Probe.SDK.Enforcement.Gate do
     end)
   end
 
-  defp enforceable?(%{event_match: %{delivery_mode: :DELIVERY_MODE_ASK_AND_BLOCK}, evaluation_mode: :EVALUATION_MODE_ENFORCE, readiness: :READINESS_ACTIVE}), do: true
+  defp enforceable?(%{
+         event_match: %{delivery_mode: :DELIVERY_MODE_ASK_AND_BLOCK},
+         evaluation_mode: :EVALUATION_MODE_ENFORCE,
+         readiness: :READINESS_ACTIVE
+       }),
+       do: true
+
   defp enforceable?(_), do: false
 
   @doc """

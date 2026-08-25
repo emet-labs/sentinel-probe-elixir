@@ -1,5 +1,6 @@
 defmodule Sentinel.Probe.SDK.Enforcement.Budget do
   import Bitwise
+
   @moduledoc """
   Monotonic budget arithmetic. Elixir analog of `sdk/go/enforcement/budget.go`
   (`monotonic-budget.ts`).
