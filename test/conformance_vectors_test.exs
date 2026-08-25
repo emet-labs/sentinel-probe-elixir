@@ -54,7 +54,7 @@ defmodule Sentinel.Probe.SDK.ConformanceVectorsTest do
 
     cond do
       length(Enum.uniq(ids)) != length(ids) -> "duplicate-id"
-      Enum.any?(cases, fn item -> Enum.any?(["value", "high", "low"], &(item[&1] !~ decimal)) end) ->
+      Enum.any?(cases, fn item -> Enum.any?(["value", "high", "low"], &(not (item[&1] =~ decimal))) end) ->
         "integer-lexeme"
 
       Enum.any?(cases, fn item ->
