@@ -545,4 +545,22 @@ defmodule Sentinel.Probe.SDK.GateTest do
   test "the zero/unspecified kind is never permitted" do
     refute Gate.permitted?(:unspecified)
   end
+
+  test "missing eligible budget exhausts without clock or Decide" do
+    mock = MockDecider.new()
+    spec = %{ask_and_block_spec() | latency_budget_nanoseconds: nil}
+    Process.put(:budget_clock_calls, 0)
+    deps = %Gate.Deps{
+      decide: fn req -> MockDecider.decide(mock, req) end,
+      now_monotonic_ns: fn ->
+        Process.put(:budget_clock_calls, Process.get(:budget_clock_calls, 0) + 1)
+        0
+      end,
+      accepted_fail_mode_for: fn _ -> :FAIL_MODE_OPEN end
+    }
+    outcome = gate(make_event(test_kind()), make_filter(test_epoch(), [spec]), nil, deps)
+    assert outcome.kind == :fail_open_permit
+    assert Process.get(:budget_clock_calls) == 0
+    assert MockDecider.call_count() == 0
+  end
 end
