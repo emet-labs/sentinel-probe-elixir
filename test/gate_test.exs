@@ -78,7 +78,7 @@ defmodule Sentinel.Probe.SDK.GateTest do
     clock = fn ->
       n = Process.get(:clock_calls, 0) + 1
       Process.put(:clock_calls, n)
-      if n == 1, do: 0, else: 10000
+      if n <= 2, do: 0, else: 10000
     end
 
     deps = %Gate.Deps{
@@ -102,7 +102,7 @@ defmodule Sentinel.Probe.SDK.GateTest do
     clock = fn ->
       n = Process.get(:clock_calls, 0) + 1
       Process.put(:clock_calls, n)
-      if n == 1, do: 0, else: 10000
+      if n <= 2, do: 0, else: 10000
     end
 
     deps = %Gate.Deps{
