@@ -231,7 +231,7 @@ defmodule Sentinel.Probe.SDK.Enforcement.Gate do
     end
   end
 
-  defp handle_response(response, aggregate_fail_mode, filter_epoch, deadline_ns, deps) do
+  defp handle_response(response, aggregate_fail_mode, filter_epoch, budget_state, deps) do
     decisions = response.specifications
 
     case response.action do
@@ -252,7 +252,7 @@ defmodule Sentinel.Probe.SDK.Enforcement.Gate do
         }
 
       :DECISION_ACTION_DEFER ->
-        {anchor, budget} = deadline_ns
+        {anchor, budget} = budget_state
 
         if Budget.remaining_budget_ns(anchor, budget, deps.now_monotonic_ns.()) > 0 do
           %__MODULE__{

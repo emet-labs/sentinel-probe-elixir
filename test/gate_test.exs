@@ -337,6 +337,102 @@ defmodule Sentinel.Probe.SDK.GateTest do
     assert MockDecider.last_request().remaining_transport_budget_nanoseconds == 10_000
   end
 
+  test "the effective budget is the minimum across eligible Specifications" do
+    # The behavior issue #113 is named for: with two-or-more eligible Specifications
+    # carrying different positive budgets, the effective (wire) budget must be the
+    # smallest one, not the largest and not merely "a" budget.
+    spec_a = %{
+      make_spec("spec-a", [test_kind()], :FAIL_MODE_OPEN, :DELIVERY_MODE_ASK_AND_BLOCK)
+      | latency_budget_nanoseconds: 50_000
+    }
+
+    spec_b = %{
+      make_spec("spec-b", [test_kind()], :FAIL_MODE_OPEN, :DELIVERY_MODE_ASK_AND_BLOCK)
+      | latency_budget_nanoseconds: 8_000
+    }
+
+    spec_c = %{
+      make_spec("spec-c", [test_kind()], :FAIL_MODE_OPEN, :DELIVERY_MODE_ASK_AND_BLOCK)
+      | latency_budget_nanoseconds: 20_000
+    }
+
+    mock = MockDecider.new(response: make_response(:DECISION_ACTION_PERMIT))
+
+    outcome =
+      gate(
+        make_event(test_kind()),
+        make_filter(test_epoch(), [spec_a, spec_b, spec_c]),
+        nil,
+        make_deps(mock, 0, nil)
+      )
+
+    assert outcome.kind == :permit
+    assert MockDecider.last_request().remaining_transport_budget_nanoseconds == 8_000
+  end
+
+  test "defer is gated by the minimum Specification budget, not the largest" do
+    spec_a = %{
+      make_spec("spec-a", [test_kind()], :FAIL_MODE_OPEN, :DELIVERY_MODE_ASK_AND_BLOCK)
+      | latency_budget_nanoseconds: 20_000
+    }
+
+    spec_b = %{
+      make_spec("spec-b", [test_kind()], :FAIL_MODE_OPEN, :DELIVERY_MODE_ASK_AND_BLOCK)
+      | latency_budget_nanoseconds: 5_000
+    }
+
+    mock = MockDecider.new(response: make_response(:DECISION_ACTION_DEFER))
+    Process.put(:min_budget_clock_calls, 0)
+
+    # The clock advances, between entry and the post-response check, past the smaller
+    # (5_000ns) budget but not past the larger (20_000ns) one. If the gate picked the
+    # max instead of the min, this would still read "budget remaining" and return
+    # defer instead of timing out.
+    clock = fn ->
+      n = Process.get(:min_budget_clock_calls, 0) + 1
+      Process.put(:min_budget_clock_calls, n)
+      if n <= 2, do: 0, else: 5_000
+    end
+
+    deps = %Gate.Deps{
+      decide: fn req -> MockDecider.decide(mock, req) end,
+      now_monotonic_ns: clock,
+      accepted_fail_mode_for: fn _ -> :FAIL_MODE_OPEN end
+    }
+
+    outcome =
+      gate(make_event(test_kind()), make_filter(test_epoch(), [spec_a, spec_b]), nil, deps)
+
+    assert outcome.kind == :fail_open_permit
+    assert outcome.reason == "defer-budget-exhausted"
+  end
+
+  test "without a caller deadline, defer times out once the Specification budget is exhausted" do
+    # No caller deadline is required for a Specification's own latency budget to
+    # eventually time out a DEFER.
+    mock = MockDecider.new(response: make_response(:DECISION_ACTION_DEFER))
+    Process.put(:no_deadline_clock_calls, 0)
+
+    clock = fn ->
+      n = Process.get(:no_deadline_clock_calls, 0) + 1
+      Process.put(:no_deadline_clock_calls, n)
+      if n <= 2, do: 0, else: 10000
+    end
+
+    deps = %Gate.Deps{
+      decide: fn req -> MockDecider.decide(mock, req) end,
+      now_monotonic_ns: clock,
+      accepted_fail_mode_for: fn _ -> :FAIL_MODE_OPEN end
+    }
+
+    outcome =
+      gate(make_event(test_kind()), make_filter(test_epoch(), [ask_and_block_spec()]), nil, deps)
+
+    assert outcome.kind == :fail_open_permit
+    assert outcome.reason == "defer-budget-exhausted"
+    assert MockDecider.call_count() == 1
+  end
+
   test "without a caller budget, defer uses the Specification budget" do
     mock = MockDecider.new(response: make_response(:DECISION_ACTION_DEFER))
 
