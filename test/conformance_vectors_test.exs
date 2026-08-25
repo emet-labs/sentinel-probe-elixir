@@ -21,6 +21,53 @@ defmodule Sentinel.Probe.SDK.ConformanceVectorsTest do
     assert Enum.map(manifest["suites"], & &1["kind"]) == ["spec_match", "int128", "enforcement_gate"]
   end
 
+  test "shared malformed corpus is rejected by category" do
+    manifest = @root |> Path.join("manifest-v1.json") |> File.read!() |> Jason.decode!()
+
+    for fixture <- manifest["malformed"] do
+      assert malformed_category(fixture["path"]) == fixture["rejection_category"], fixture["path"]
+    end
+  end
+
+  defp malformed_category(name) do
+    raw = @root |> Path.join(name) |> File.read!()
+
+    if name == "malformed/duplicate-key.json" and length(Regex.scan(~r/"kind"\s*:/, raw)) > 1 do
+      "duplicate-key"
+    else
+      value = Jason.decode!(raw)
+
+      cond do
+        value["format_version"] != "1.0.0" -> "version"
+        not Map.has_key?(value, "cases") -> "missing-field"
+        Enum.any?(Map.keys(value), &(&1 not in ["format_version", "kind", "cases"])) -> "unknown-field"
+        value["kind"] not in ["spec_match", "int128", "enforcement_gate"] -> "unknown-token"
+        value["kind"] == "int128" -> malformed_int128_category(value["cases"])
+        true -> "accepted"
+      end
+    end
+  end
+
+  defp malformed_int128_category(cases) do
+    ids = Enum.map(cases, & &1["id"])
+    decimal = ~r/^(0|-?[1-9][0-9]*)$/
+
+    cond do
+      length(Enum.uniq(ids)) != length(ids) -> "duplicate-id"
+      Enum.any?(cases, fn item -> Enum.any?(["value", "high", "low"], &(item[&1] !~ decimal)) end) ->
+        "integer-lexeme"
+
+      Enum.any?(cases, fn item ->
+        value = String.to_integer(item["value"])
+        value < -Integer.pow(2, 127) or value >= Integer.pow(2, 127)
+      end) ->
+        "integer-range"
+
+      true ->
+        "accepted"
+    end
+  end
+
   test "exact Int128 words and independent decoding follow shared vectors" do
     suite = load("int128-v1.json")
     assert suite["kind"] == "int128"
