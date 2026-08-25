@@ -1,4 +1,5 @@
 defmodule Sentinel.Probe.SDK.Enforcement.Budget do
+  import Bitwise
   @moduledoc """
   Monotonic budget arithmetic. Elixir analog of `sdk/go/enforcement/budget.go`
   (`monotonic-budget.ts`).
@@ -20,8 +21,21 @@ defmodule Sentinel.Probe.SDK.Enforcement.Budget do
   @spec remaining_transport_budget_ns(deadline_ns :: integer(), now_ns :: integer()) ::
           non_neg_integer()
   def remaining_transport_budget_ns(deadline_ns, now_ns) do
-    remaining = deadline_ns - now_ns
+    monotonic_delta_ns(now_ns, deadline_ns) || 0
+  end
 
-    if remaining <= 0, do: 0, else: remaining
+  @modulus 1 <<< 64
+  @half 1 <<< 63
+
+  def monotonic_delta_ns(from, to) do
+    delta = Integer.mod(Integer.mod(to, @modulus) - Integer.mod(from, @modulus), @modulus)
+    if delta < @half, do: delta, else: nil
+  end
+
+  def remaining_budget_ns(anchor, budget, now) do
+    case monotonic_delta_ns(anchor, now) do
+      elapsed when is_integer(elapsed) and elapsed < budget -> budget - elapsed
+      _ -> 0
+    end
   end
 end

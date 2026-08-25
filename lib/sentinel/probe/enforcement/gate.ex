@@ -164,7 +164,7 @@ defmodule Sentinel.Probe.SDK.Enforcement.Gate do
     # 2. Enforcing set: selects the event AND asks-and-blocks.
     enforcing =
       Enum.filter(filter.specifications, fn spec ->
-        SpecMatch.selects?(spec, event) and is_ask_and_block?(spec)
+        SpecMatch.selects?(spec, event) and enforceable?(spec)
       end)
 
     if enforcing == [] do
@@ -177,14 +177,20 @@ defmodule Sentinel.Probe.SDK.Enforcement.Gate do
       # 3. Aggregate fail mode: fail-closed wins.
       aggregate_fail_mode = compute_aggregate_fail_mode(enforcing, deps)
 
-      # 4. Budget. Exhausted before the call means apply the fail mode without
-      #    asking, so a Probe already out of time does not spend more of it.
-      case remaining_budget(deadline_ns, deps) do
-        :exhausted ->
+      budgets = Enum.map(enforcing, & &1.latency_budget_nanoseconds)
+      if Enum.any?(budgets, &(&1 in [nil, 0])) do
+        apply_fail_mode(aggregate_fail_mode, "budget-exhausted", filter_epoch, nil)
+      else
+        anchor = deps.now_monotonic_ns.()
+        specification_budget = Enum.min(budgets)
+        caller_budget = if deadline_ns == nil, do: specification_budget, else: Budget.monotonic_delta_ns(anchor, deadline_ns) || 0
+        effective_budget = min(specification_budget, caller_budget)
+        remaining = Budget.remaining_budget_ns(anchor, effective_budget, deps.now_monotonic_ns.())
+        if remaining == 0 do
           apply_fail_mode(aggregate_fail_mode, "budget-exhausted", filter_epoch, nil)
-
-        remaining ->
-          ask(event, filter_epoch, deadline_ns, aggregate_fail_mode, remaining, deps, options)
+        else
+          ask(event, filter_epoch, {anchor, effective_budget}, aggregate_fail_mode, remaining, deps, options)
+        end
       end
     end
   end
@@ -197,7 +203,7 @@ defmodule Sentinel.Probe.SDK.Enforcement.Gate do
     if remaining == 0, do: :exhausted, else: remaining
   end
 
-  defp ask(event, filter_epoch, deadline_ns, aggregate_fail_mode, remaining_budget, deps, options) do
+  defp ask(event, filter_epoch, budget_state, aggregate_fail_mode, remaining_budget, deps, options) do
     # 5. Build the request from the already-projected event.
     request = %DecideRequest{
       request_id: options.request_id,
@@ -211,7 +217,7 @@ defmodule Sentinel.Probe.SDK.Enforcement.Gate do
     # 6. Ask. Any error routes into the fail mode, never a permit, never a raise.
     case deps.decide.(request) do
       {:ok, response} ->
-        handle_response(response, aggregate_fail_mode, filter_epoch, deadline_ns, deps)
+        handle_response(response, aggregate_fail_mode, filter_epoch, budget_state, deps)
 
       {:error, error} ->
         apply_fail_mode(aggregate_fail_mode, describe_error(error), filter_epoch, nil)
@@ -239,8 +245,8 @@ defmodule Sentinel.Probe.SDK.Enforcement.Gate do
         }
 
       :DECISION_ACTION_DEFER ->
-        if deadline_ns == nil do
-          # No latency budget was declared, so there is no timeout path: defer.
+        {anchor, budget} = deadline_ns
+        if Budget.remaining_budget_ns(anchor, budget, deps.now_monotonic_ns.()) > 0 do
           %__MODULE__{
             kind: :defer,
             reason: "defer",
@@ -248,16 +254,7 @@ defmodule Sentinel.Probe.SDK.Enforcement.Gate do
             specifications: decisions
           }
         else
-          if Budget.remaining_transport_budget_ns(deadline_ns, deps.now_monotonic_ns.()) > 0 do
-            %__MODULE__{
-              kind: :defer,
-              reason: "defer",
-              filter_epoch: filter_epoch,
-              specifications: decisions
-            }
-          else
-            apply_fail_mode(aggregate_fail_mode, "defer-budget-exhausted", filter_epoch, decisions)
-          end
+          apply_fail_mode(aggregate_fail_mode, "defer-budget-exhausted", filter_epoch, decisions)
         end
 
       :DECISION_ACTION_UNSPECIFIED ->
@@ -304,8 +301,8 @@ defmodule Sentinel.Probe.SDK.Enforcement.Gate do
     end)
   end
 
-  defp is_ask_and_block?(%{event_match: %{delivery_mode: :DELIVERY_MODE_ASK_AND_BLOCK}}), do: true
-  defp is_ask_and_block?(_), do: false
+  defp enforceable?(%{event_match: %{delivery_mode: :DELIVERY_MODE_ASK_AND_BLOCK}, evaluation_mode: :EVALUATION_MODE_ENFORCE, readiness: :READINESS_ACTIVE}), do: true
+  defp enforceable?(_), do: false
 
   @doc """
   Renders a transport failure for the audit record, distinguishing a deadline

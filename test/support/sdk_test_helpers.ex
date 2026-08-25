@@ -51,7 +51,10 @@ defmodule Sentinel.Probe.SDK.TestHelpers do
         event_kinds: kinds,
         delivery_mode: delivery_mode
       },
-      fail_mode: fail_mode
+      fail_mode: fail_mode,
+      evaluation_mode: :EVALUATION_MODE_ENFORCE,
+      readiness: :READINESS_ACTIVE,
+      latency_budget_nanoseconds: 10_000
     }
   end
 
