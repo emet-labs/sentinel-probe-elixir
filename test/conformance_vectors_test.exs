@@ -14,6 +14,11 @@ defmodule Sentinel.Probe.SDK.ConformanceVectorsTest do
     document
   end
 
+  test "manifest suite registry fails closed" do
+    manifest = @root |> Path.join("manifest-v1.json") |> File.read!() |> Jason.decode!()
+    assert Enum.map(manifest["suites"], & &1["kind"]) == ["spec_match", "int128", "enforcement_gate"]
+  end
+
   test "exact Int128 words and independent decoding follow shared vectors" do
     suite = load("int128-v1.json")
     assert suite["kind"] == "int128"
