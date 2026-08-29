@@ -661,4 +661,37 @@ defmodule Sentinel.Probe.SDK.GateTest do
     assert Process.get(:budget_clock_calls) == 0
     assert MockDecider.call_count() == 0
   end
+
+  # Issue #123 asked whether an injected monotonic clock that FAILS (as opposed to one that
+  # is missing) should degrade to the aggregate fail mode with reason "clock-unavailable",
+  # or surface. The maintainer ruling on PR #127 is that it surfaces: a clock that is wired
+  # up but cannot be read is a caller bug, and there is no real-world scenario that makes it
+  # worth absorbing. The Elixir port has always let it propagate, so this pins existing
+  # behaviour rather than changing it -- five of six SDKs had no coverage here at all, which
+  # is how the ports drifted apart. TypeScript's outlier catch is removed in the same change.
+  #
+  # The read exercised is the third and last one, after the DEFER response, so the raise has
+  # to travel back out through the response handler.
+  test "a raising monotonic clock propagates" do
+    mock = MockDecider.new(response: make_response(:DECISION_ACTION_DEFER))
+    Process.put(:clock_calls, 0)
+
+    clock = fn ->
+      n = Process.get(:clock_calls, 0) + 1
+      Process.put(:clock_calls, n)
+      if n == 3, do: raise(RuntimeError, "clock hardware fault"), else: 0
+    end
+
+    assert_raise RuntimeError, "clock hardware fault", fn ->
+      gate(
+        make_event(test_kind()),
+        make_filter(test_epoch(), [ask_and_block_spec()]),
+        10000,
+        deps_with_clock(mock, clock)
+      )
+    end
+
+    assert Process.get(:clock_calls) == 3
+    assert MockDecider.call_count() == 1
+  end
 end
