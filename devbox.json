@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.17.5/.schema/devbox.schema.json",
+  "packages": [
+    "github:NixOS/nixpkgs/977d5bddae807d4e94cce078478ecaedd934cb41#beam28Packages.elixir_1_19",
+    "just@1.57.0",
+    "buf@1.72.0",
+    "cacert@3.126"
+  ]
+}

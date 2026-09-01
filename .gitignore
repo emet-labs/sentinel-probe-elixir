@@ -1,6 +1,5 @@
 # Generated proto modules (mirrors sdk/go/gen/). Produced by
 # tools/generate-elixir-sdk.sh before build/test/lint; never committed.
-/gen/
 
 # Mix artifacts.
 /deps/

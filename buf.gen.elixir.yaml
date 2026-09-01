@@ -54,4 +54,4 @@ plugins:
   # before invoking this template. The path is relative to the repository root, which is where
   # that script cds before calling buf.
   - local: .tools/protoc-gen-elixir
-    out: sdk/elixir/gen
+    out: gen

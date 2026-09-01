@@ -2,7 +2,7 @@ defmodule Sentinel.Probe.SDK.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  @source_url "https://github.com/emet-labs/sentinel"
+  @source_url "https://github.com/emet-labs/sentinel-probe-elixir"
 
   def project do
     [
@@ -59,7 +59,7 @@ defmodule Sentinel.Probe.SDK.MixProject do
 
   defp package do
     [
-      licenses: ["AGPL-3.0"],
+      licenses: ["MPL-2.0"],
       links: %{"GitHub" => @source_url}
     ]
   end

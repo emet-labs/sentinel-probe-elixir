@@ -7,7 +7,7 @@ defmodule Sentinel.Probe.SDK.ConformanceVectorsTest do
   alias Sentinel.Probe.SDK.Int128, as: Int128Codec
   alias Sentinel.Probe.SDK.Internal.SpecMatch
 
-  @root Path.expand("../../../testdata/probe-sdk-conformance", __DIR__)
+  @root Path.expand("../testdata/probe-sdk-conformance", __DIR__)
 
   defp load(name) do
     document = @root |> Path.join(name) |> File.read!() |> Jason.decode!()
