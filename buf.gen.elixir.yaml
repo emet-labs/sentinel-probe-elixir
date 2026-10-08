@@ -12,7 +12,7 @@
 #      the root template on a gate path therefore deletes a committed file that nothing in that
 #      path recreates, and model/src/wire.rs `include_bytes!`s it, so `cargo build` hard-fails.
 #      README.md's "only generated Rust storage is committed so sentinel-model compiles without
-#      invoking a generator in canonical gates" is the invariant this preserves.
+#      invoking a generator in the CI verification job" is the invariant this preserves.
 #   2. One language, not six. The root template pulls six BSR remote plugins; this gate needs
 #      one. That keeps `resource_exhausted` off the critical path (see the Justfile's ORDERING
 #      note) — and since the only plugin here is local, the Elixir gate needs NO network at all.
