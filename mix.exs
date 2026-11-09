@@ -66,6 +66,6 @@ defmodule Sentinel.Probe.SDK.MixProject do
 
   defp description do
     "BEAM Probe SDK for Sentinel: filter projection, enforcement gate, " <>
-      "Connect decision transport, and OTel-span-to-ProducerEvent emission."
+      "OTLP/HTTP trace export, log receiver, enforcement gate, and filter projection."
   end
 end

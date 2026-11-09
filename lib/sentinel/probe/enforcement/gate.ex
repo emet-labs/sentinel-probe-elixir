@@ -41,6 +41,7 @@ defmodule Sentinel.Probe.SDK.Enforcement.Gate do
   alias Sentinel.Probe.SDK.Client.Transport
   alias Sentinel.Probe.SDK.Enforcement.Budget
   alias Sentinel.Probe.SDK.Internal.SpecMatch
+  alias Sentinel.Probe.SDK.Otlp.Receiver
 
   # The outcome discriminant. A `:no_filter` of its own so an auditor can tell
   # "we had no policy" from "we had policy and could not reach Sentinel".
@@ -95,9 +96,10 @@ defmodule Sentinel.Probe.SDK.Enforcement.Gate do
   The effects the gate needs, all injected so the gate itself stays pure and
   testable without a network or a clock.
 
-    * `:decide` — performs the ask. In production this wraps
-      `Sentinel.Probe.SDK.Client.Transport`; in tests it is a stub. Returns
-      `{:ok, DecideResponse.t()}` | `{:error, term}`.
+    * `:decide` — reads the `DecideResponse` for this request. In production this
+      is `decide_from_logs/1`, which waits on the OTLP log receiver and does not
+      call Connect. Tests may pass a stub. Returns `{:ok, DecideResponse.t()}`
+      or `{:error, term}`.
     * `:now_monotonic_ns` — reads the host's monotonic clock. Required whenever
       `deadline_ns` is set.
     * `:accepted_fail_mode_for` — reports the fail mode the deployment has
@@ -132,6 +134,37 @@ defmodule Sentinel.Probe.SDK.Enforcement.Gate do
     @moduledoc false
     defstruct [:request_id, :idempotency_key, :source_handle]
   end
+
+  @doc """
+  Decision dependency that reads a `DecideResponse` from the OTLP log receiver.
+
+  The gate does not call Connect. When no matching log is stored before the
+  remaining budget, the dependency returns a deadline error and the gate
+  applies the aggregate fail mode, the same path as a transport timeout.
+  Unspecified action is rejected by the receiver and never becomes a permit.
+  """
+  @spec decide_from_logs(GenServer.server()) ::
+          (DecideRequest.t() -> {:ok, DecideResponse.t()} | {:error, term()})
+  def decide_from_logs(receiver) do
+    fn %DecideRequest{} = request ->
+      timeout_ms = budget_timeout_ms(request.remaining_transport_budget_nanoseconds)
+
+      case Receiver.await_decision(receiver, request.request_id, timeout_ms) do
+        {:ok, %DecideResponse{} = response} ->
+          {:ok, response}
+
+        {:error, :timeout} ->
+          {:error,
+           %Transport.Error{
+             kind: :deadline,
+             message: "no DecideResponse log arrived before the budget elapsed"
+           }}
+      end
+    end
+  end
+
+  defp budget_timeout_ms(ns) when is_integer(ns) and ns > 0, do: div(ns, 1_000_000)
+  defp budget_timeout_ms(_), do: 0
 
   @doc """
   Enforces one `ASK_AND_BLOCK` event and returns the action the Probe must take.

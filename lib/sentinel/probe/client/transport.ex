@@ -2,6 +2,10 @@ defmodule Sentinel.Probe.SDK.Client.Transport do
   @moduledoc """
   Connect `application/proto` (binary) transport over Finch — NOT Connect-JSON.
 
+  This module is not the Probe wire. Ended spans and completeness leave as
+  OTLP/HTTP, and `DecideResponse` returns as an OTLP log. The enforcement gate
+  does not call `decide/4`.
+
   Elixir analog of `sdk/go/client/transport.go`. The Go analog wraps
   `connectrpc.com/connect`, which is built on stdlib `net/http`; on BEAM the
   equivalent is Finch (a process-based HTTP client over Mint) and a hand-rolled

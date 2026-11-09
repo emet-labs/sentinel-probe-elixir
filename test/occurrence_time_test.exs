@@ -15,7 +15,7 @@ defmodule Sentinel.Probe.SDK.OccurrenceTimeTest do
   end
 
   test "comes from start_time, not end_time" do
-    event = SpanToEvent.span_to_event(%Span{name: "x", start_time: {1_700_000_000, 0}})
+    {:ok, event} = SpanToEvent.span_to_event(%Span{name: "x", start_time: {1_700_000_000, 0}})
     assert Int128.to_int(event.occurrence_time.nanoseconds) == 1_700_000_000_000_000_000
   end
 

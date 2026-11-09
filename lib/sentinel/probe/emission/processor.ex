@@ -49,6 +49,7 @@ defmodule Sentinel.Probe.SDK.Emission.Processor do
   )
 
   alias Sentinel.Probe.SDK.Emission.{Span, SpanToEvent}
+  alias Sentinel.Probe.SDK.Otlp.Exporter
 
   @doc false
   @impl true
@@ -84,10 +85,39 @@ defmodule Sentinel.Probe.SDK.Emission.Processor do
       on_malformed_link: config[:on_malformed_link]
     }
 
-    event = SpanToEvent.span_to_event(span_struct)
+    case SpanToEvent.span_to_event(span_struct) do
+      {:ok, event} ->
+        case export_otlp(config, span_struct) do
+          :skip ->
+            if cb = config[:on_event], do: cb.(event)
+            true
 
-    if cb = config[:on_event], do: cb.(event)
-    true
+          :ok ->
+            if cb = config[:on_event], do: cb.(event)
+            true
+
+          {:error, reason} ->
+            if cb = config[:on_export_error], do: cb.(reason)
+            false
+        end
+
+      {:error, reason} ->
+        if cb = config[:on_export_error], do: cb.(reason)
+        false
+    end
+  end
+
+  defp export_otlp(config, span) do
+    case config[:otlp] do
+      %{endpoint: endpoint, source_handle: source_handle} ->
+        case Exporter.export_traces(endpoint, source_handle, [span]) do
+          {:ok, _} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      _ ->
+        :skip
+    end
   end
 
   @doc false

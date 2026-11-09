@@ -19,8 +19,9 @@ defmodule Sentinel.Probe.SDK.Emission.Tracer do
   the tracer accepts an existing provider and never starts its own.
   """
 
-  alias Sentinel.Model.V1.ProducerEvent
+  alias Sentinel.Model.V1.{ProducerCompletenessSignal, ProducerEvent}
   alias Sentinel.Probe.SDK.Emission.{Span, SpanToEvent}
+  alias Sentinel.Probe.SDK.Otlp.Exporter
 
   defstruct [:tracer, :provider]
 
@@ -67,11 +68,31 @@ defmodule Sentinel.Probe.SDK.Emission.Tracer do
   @doc """
   Converts an ended span (`Span`) into a `ProducerEvent`.
 
-  Convenience wrapper over `SpanToEvent.span_to_event/1`, mirroring the
-  reference's `ProbeTracer.toEvent`. The host builds the `%Span{}` — typically by
-  capturing ended-span data through the `Emission.Processor` `on_end/2` callback
-  — then calls this.
+  A missing predecessor id is `{:error, reason}`. The span id is not stored.
   """
-  @spec to_event(Span.t()) :: ProducerEvent.t()
+  @spec to_event(Span.t()) :: {:ok, ProducerEvent.t()} | {:error, term()}
   def to_event(%Span{} = span), do: SpanToEvent.span_to_event(span)
+
+  @doc """
+  Exports ended spans as OTLP/HTTP protobuf to `endpoint <> "/v1/traces"`.
+
+  `source_handle` is sent as `x-sentinel-source-handle`. A missing predecessor
+  id fails the export and nothing is posted.
+  """
+  @spec export_traces([Span.t()], String.t(), String.t()) :: {:ok, binary()} | {:error, term()}
+  def export_traces(spans, endpoint, source_handle) when is_list(spans) do
+    Exporter.export_traces(endpoint, source_handle, spans)
+  end
+
+  @doc """
+  Exports a producer completeness signal as an OTLP log to `endpoint <> "/v1/logs"`.
+
+  The log's `sentinel.payload.type` is `sentinel.model.v1.ProducerCompletenessSignal`
+  and `sentinel.source_handle` equals `source_handle`.
+  """
+  @spec export_completeness(ProducerCompletenessSignal.t(), String.t(), String.t()) ::
+          {:ok, binary()} | {:error, term()}
+  def export_completeness(%ProducerCompletenessSignal{} = signal, endpoint, source_handle) do
+    Exporter.export_completeness(endpoint, source_handle, signal)
+  end
 end

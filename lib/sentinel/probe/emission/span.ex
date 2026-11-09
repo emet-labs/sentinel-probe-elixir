@@ -28,17 +28,47 @@ defmodule Sentinel.Probe.SDK.Emission.Span do
   `nil` members are skipped, as the reference skips null/undefined.
   """
 
-  # Reserved attribute keys: causal-edge metadata, never emitted as attributes.
+  # Reserved attribute keys. They are the #398 span contract, never domain
+  # attributes. A span id is not one of them.
   @attribute_event_id "sentinel.event.id"
   @attribute_parent_event_id "sentinel.parent.event.id"
+  @attribute_sequence_epoch "sentinel.sequence.epoch"
+  @attribute_sequence_number "sentinel.sequence.number"
+  @attribute_schema_version "sentinel.schema.version"
+  @attribute_filter_epoch "sentinel.acknowledged_filter_epoch"
+  @attribute_sensitivity "sentinel.claimed_sensitivity"
+  @attribute_capabilities "sentinel.claimed_capabilities"
 
-  # Malformed-link sources reported through `on_malformed_link`.
+  @reserved_attribute_keys [
+    @attribute_event_id,
+    @attribute_parent_event_id,
+    @attribute_sequence_epoch,
+    @attribute_sequence_number,
+    @attribute_schema_version,
+    @attribute_filter_epoch,
+    @attribute_sensitivity,
+    @attribute_capabilities
+  ]
+
+  # Kept so existing span fixtures still construct. A missing event id fails
+  # conversion; these labels are not a substitute predecessor.
   @malformed_link_source_parent "parent"
   @malformed_link_source_link "link"
 
   @doc false
   def attribute_event_id, do: @attribute_event_id
   def attribute_parent_event_id, do: @attribute_parent_event_id
+  def attribute_sequence_epoch, do: @attribute_sequence_epoch
+  def attribute_sequence_number, do: @attribute_sequence_number
+  def attribute_schema_version, do: @attribute_schema_version
+  def attribute_filter_epoch, do: @attribute_filter_epoch
+  def attribute_sensitivity, do: @attribute_sensitivity
+  def attribute_capabilities, do: @attribute_capabilities
+  def reserved_attribute_keys, do: @reserved_attribute_keys
+  def reserved_attribute?(key) when is_binary(key), do: key in @reserved_attribute_keys
+  def reserved_attribute?(_), do: false
+  def sentinel_attribute?(<<"sentinel.", _::binary>>), do: true
+  def sentinel_attribute?(_), do: false
   def malformed_link_source_parent, do: @malformed_link_source_parent
   def malformed_link_source_link, do: @malformed_link_source_link
 

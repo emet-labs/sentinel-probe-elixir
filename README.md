@@ -10,11 +10,13 @@ The SDK gives a BEAM Probe four things:
 1. **Filter projection** (`Sentinel.Probe.SDK.Filter`) — relevance projection per ADR-0006.
 2. **Enforcement gate** (`Sentinel.Probe.SDK.Enforcement.Gate`) — the one runtime gate
    (ADR-0023 gate 2): per-spec fail mode, fail-closed-wins, monotonic budget.
-3. **Decision transport** (`Sentinel.Probe.SDK.Client.Transport`) — Connect
-   `application/proto` (binary) over Finch, not Connect-JSON.
-4. **Emission** (`Sentinel.Probe.SDK.Emission`) — wraps the OTel Erlang SDK; a custom
-   span processor captures ended spans and `span_to_event/1` converts them to
-   `ProducerEvent`s. The host owns export (ADR-0002).
+3. **OTLP log receiver** (`Sentinel.Probe.SDK.Otlp.Receiver`) — `POST /v1/logs` on
+   `127.0.0.1` decodes Verdict, Event Filter, and DecideResponse. The enforcement
+   gate reads DecideResponse from that log and does not call Connect.
+4. **Emission** (`Sentinel.Probe.SDK.Emission`) — ended spans export as OTLP/HTTP
+   protobuf to `/v1/traces` with `x-sentinel-source-handle`. Completeness is an
+   OTLP log typed `sentinel.model.v1.ProducerCompletenessSignal`. A missing
+   predecessor id fails the export; a span id is not stored as an Event id.
 
 ## Module map (Go → Elixir)
 
@@ -27,6 +29,8 @@ The SDK gives a BEAM Probe four things:
 | `client/filterstore.go`          | `Sentinel.Probe.SDK.Client.FilterStore`        |
 | `client/transport.go`            | `Sentinel.Probe.SDK.Client.Transport`         |
 | `emission/spantoevent.go`        | `Sentinel.Probe.SDK.Emission.SpanToEvent`      |
+| —                                | `Sentinel.Probe.SDK.Otlp.Exporter`             |
+| —                                | `Sentinel.Probe.SDK.Otlp.Receiver`             |
 | `emission/tracer.go`             | `Sentinel.Probe.SDK.Emission.Tracer`          |
 | `config/sourcetier.go`           | `Sentinel.Probe.SDK.Config.SourceTier`        |
 | `int128/int128.go`               | `Sentinel.Probe.SDK.Int128`                   |

@@ -10,7 +10,9 @@ defmodule Sentinel.Probe.SDK.Client.Client do
 
   alias Sentinel.Model.V1.{EventFilter, ProducerEvent}
   alias Sentinel.Probe.V1.DecideRequest
-  alias Sentinel.Probe.SDK.Client.{FilterStore, Transport}
+  alias Sentinel.Probe.SDK.Client.FilterStore
+  alias Sentinel.Probe.SDK.Enforcement.Gate
+  alias Sentinel.Probe.SDK.Otlp.Receiver
 
   defstruct [:config, :store, :decider]
 
@@ -36,12 +38,19 @@ defmodule Sentinel.Probe.SDK.Client.Client do
   @doc """
   Builds a `ProbeClient`.
 
-  `decider` is REQUIRED with no default: a silently-defaulted transport hides a
-  misconfigured endpoint until the first enforcement call. In production build it
-  with `transport_decider/2`; in tests pass a stub `fn _req -> {:ok, resp} end`.
+  `decider` is REQUIRED with no default. In production pass the log receiver
+  pid: the gate reads `DecideResponse` logs and does not call Connect. Tests
+  may pass a stub `fn _req -> {:ok, resp} end`.
   """
-  @spec new(config(), decide_fn()) :: t()
-  def new(%Config{source_handle: source_handle, initial_filter: initial} = config, decider) do
+  @spec new(config(), pid() | decide_fn()) :: t()
+  def new(%Config{} = config, receiver) when is_pid(receiver) do
+    client = new(config, log_decider(receiver))
+    Receiver.attach_filter_store(receiver, client.store)
+    client
+  end
+
+  def new(%Config{source_handle: source_handle, initial_filter: initial} = config, decider)
+      when is_function(decider, 1) do
     key = {:sentinel_probe_filter, source_handle}
     store = FilterStore.new(key, initial)
     %__MODULE__{config: config, store: store, decider: decider}
@@ -62,10 +71,8 @@ defmodule Sentinel.Probe.SDK.Client.Client do
   @doc """
   Swaps in a new `EventFilter`, reporting whether the store was actually updated.
 
-  Where the new filter comes from is out of SDK scope: in v1 Sentinel pushes
-  filters (ADR-0006) and no push RPC exists in `decision.proto`, so the host
-  calls `set_filter/2` when a push arrives. Same division of labour as the
-  reference.
+  The OTLP log receiver calls this when an `EventFilter` log arrives and a
+  filter store is attached. A host can also call it directly.
   """
   @spec set_filter(t(), EventFilter.t()) :: boolean()
   def set_filter(%__MODULE__{store: store}, filter), do: FilterStore.set(store, filter)
@@ -125,17 +132,22 @@ defmodule Sentinel.Probe.SDK.Client.Client do
   def decide_func(%__MODULE__{decider: decider}), do: decider
 
   @doc """
-  Builds a decider function backed by the Connect `application/proto` transport.
+  Builds the gate's `:decide` dependency from the OTLP log receiver.
 
-  Convenience so a host does not write the wrapper by hand:
+  This is the production ask. It does not call Connect.
+  """
+  @spec log_decider(pid()) :: decide_fn()
+  def log_decider(receiver) when is_pid(receiver), do: Gate.decide_from_logs(receiver)
 
-      decider = Client.transport_decider(config.sentinel_base_url, :my_finch)
-      probe = Client.new(config, decider)
+  @doc """
+  Builds a decider over the Connect client.
 
-  `opts` are passed through to `Transport.decide/4` (e.g. `receive_timeout`).
+  Connect is not the Probe wire. The gate's production dependency is
+  `log_decider/1`. This function remains so the Connect codec can still be
+  exercised; the gate does not call it.
   """
   @spec transport_decider(String.t(), atom(), keyword()) :: decide_fn()
   def transport_decider(base_url, finch, opts \\ []) do
-    fn request -> Transport.decide(base_url, request, finch, opts) end
+    fn request -> Sentinel.Probe.SDK.Client.Transport.decide(base_url, request, finch, opts) end
   end
 end
