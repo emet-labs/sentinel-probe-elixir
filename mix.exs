@@ -62,6 +62,10 @@ defmodule Sentinel.Probe.SDK.MixProject do
   defp package do
     [
       licenses: ["AGPL-3.0"],
+      # gen/ holds the generated proto modules that lib/ depends on (elixirc_paths above
+      # compiles both). Hex's default file list omits it, which shipped a package that
+      # failed to compile for its consumers; it is committed in the published mirror.
+      files: ~w(lib gen .formatter.exs mix.exs README.md LICENSE),
       links: %{"GitHub" => @source_url}
     ]
   end
