@@ -27,8 +27,18 @@ defmodule Sentinel.Probe.SDK.Otlp.Receiver do
     filters: [],
     decisions: %{},
     waiters: %{},
-    filter_store: nil
+    filter_store: nil,
+    writer_monitor: nil,
+    decision_timer: nil
   ]
+
+  @typedoc """
+  Arms the expiry of one decision wait. Called in the waiting process with the
+  wait in milliseconds and the wait's reference; on expiry it must send
+  `{:decision_timeout, ref}` to that process. Returns a function that disarms
+  it.
+  """
+  @type decision_timer :: (non_neg_integer(), reference() -> (-> any()))
 
   @doc """
   Starts the receiver.
@@ -36,6 +46,9 @@ defmodule Sentinel.Probe.SDK.Otlp.Receiver do
     * `:ip` — the bind address as an `:inet` tuple or an address string
       (`{127, 0, 0, 1}` by default; `{0, 0, 0, 0}` for a container).
     * `:port` — the listen port (`0`, an ephemeral port, by default).
+    * `:decision_timer` — replaces the timer `await_decision/3` arms for a
+      wait (see `t:decision_timer/0`). The default is `Process.send_after/3`.
+      A test supplies its own so a wait runs without a wall clock.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -86,7 +99,14 @@ defmodule Sentinel.Probe.SDK.Otlp.Receiver do
     end
   end
 
-  @doc "Replaces the filter store when an Event Filter log arrives."
+  @doc """
+  Replaces the filter store when an Event Filter log arrives.
+
+  Received Filters are handed to the store's writer (`FilterStore.set_async/2`)
+  in arrival order, so the receiver never waits on a Filter apply. A Filter is
+  visible in the store shortly after its log is acknowledged, not at the same
+  instant.
+  """
   @spec attach_filter_store(GenServer.server(), FilterStore.t()) :: :ok
   def attach_filter_store(server, %FilterStore{} = store) do
     GenServer.call(server, {:attach_filter_store, store})
@@ -110,7 +130,8 @@ defmodule Sentinel.Probe.SDK.Otlp.Receiver do
 
       :ok = :gen_tcp.controlling_process(listen, acceptor)
       send(acceptor, :go)
-      {:ok, %__MODULE__{listen: listen, port: port, acceptor: acceptor}}
+      timer = Keyword.get(opts, :decision_timer, &send_after_timer/2)
+      {:ok, %__MODULE__{listen: listen, port: port, acceptor: acceptor, decision_timer: timer}}
     else
       {:error, reason} -> {:stop, reason}
     end
@@ -146,9 +167,8 @@ defmodule Sentinel.Probe.SDK.Otlp.Receiver do
   end
 
   def handle_call({:attach_filter_store, store}, _from, state) do
-    state = %{state | filter_store: store}
-    if state.filters != [], do: FilterStore.set(store, hd(state.filters))
-    {:reply, :ok, state}
+    if state.writer_monitor, do: Process.demonitor(state.writer_monitor, [:flush])
+    {:reply, :ok, replay_filters(%{state | filter_store: store})}
   end
 
   def handle_call({:ingest, bytes}, _from, state) do
@@ -162,11 +182,11 @@ defmodule Sentinel.Probe.SDK.Otlp.Receiver do
     case Map.fetch(state.decisions, request_id) do
       {:ok, response} ->
         send(waiter, {:decision, ref, response})
-        {:reply, :ok, state}
+        {:reply, {:ok, state.decision_timer}, state}
 
       :error ->
         waiters = Map.update(state.waiters, request_id, [{waiter, ref}], &[{waiter, ref} | &1])
-        {:reply, :ok, %{state | waiters: waiters}}
+        {:reply, {:ok, state.decision_timer}, %{state | waiters: waiters}}
     end
   end
 
@@ -180,6 +200,34 @@ defmodule Sentinel.Probe.SDK.Otlp.Receiver do
     {:noreply, %{state | waiters: waiters}}
   end
 
+  # The attached store's writer died, so Filters still queued in it are lost.
+  # Replay every received Filter to the restarted writer; the epoch order keeps
+  # the highest one, so the replay cannot downgrade the store.
+  @impl true
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{writer_monitor: ref} = state) do
+    {:noreply, replay_filters(state)}
+  end
+
+  def handle_info(_message, state), do: {:noreply, state}
+
+  # Monitors the store's writer (starting it if needed), then hands it every
+  # Filter received so far in arrival order. The store keeps the highest
+  # epoch, so a fresh store never takes a stale last-received Filter.
+  # set_async: the writer applies them, so this server never waits on a Filter
+  # apply while decisions are being registered and delivered.
+  #
+  # A store deleted with FilterStore.delete/1 is detached instead: replaying
+  # into it, or starting its writer, would bring it back.
+  defp replay_filters(%{filter_store: store} = state) do
+    if FilterStore.deleted?(store) do
+      %{state | filter_store: nil, writer_monitor: nil}
+    else
+      monitor = Process.monitor(FilterStore.writer(store))
+      state.filters |> Enum.reverse() |> Enum.each(&FilterStore.set_async(store, &1))
+      %{state | writer_monitor: monitor}
+    end
+  end
+
   defp normalize_lookup({:ok, response}), do: {:ok, response}
   defp normalize_lookup(:error), do: :missing
 
@@ -189,7 +237,7 @@ defmodule Sentinel.Probe.SDK.Otlp.Receiver do
         %{state | verdicts: [verdict | state.verdicts]}
 
       {:event_filter, filter}, state ->
-        if state.filter_store, do: FilterStore.set(state.filter_store, filter)
+        if state.filter_store, do: FilterStore.set_async(state.filter_store, filter)
         %{state | filters: [filter | state.filters]}
 
       {:decide, response}, state ->
@@ -204,14 +252,20 @@ defmodule Sentinel.Probe.SDK.Otlp.Receiver do
     Enum.each(waiters, fn {waiter, ref} -> send(waiter, {:decision, ref, response}) end)
   end
 
+  # Registers the waiter, then arms one timer for exactly `timeout_ms`, so an
+  # answer or expiry delivered while arming still finds the waiter.
   defp wait(server, request_id, timeout_ms) do
     ref = make_ref()
-    :ok = GenServer.call(server, {:notify, request_id, self(), ref})
+    {:ok, timer} = GenServer.call(server, {:notify, request_id, self(), ref})
+    disarm = timer.(timeout_ms, ref)
 
     receive do
-      {:decision, ^ref, response} -> {:ok, response}
-    after
-      timeout_ms ->
+      {:decision, ^ref, response} ->
+        disarm.()
+        flush_timeout(ref)
+        {:ok, response}
+
+      {:decision_timeout, ^ref} ->
         GenServer.cast(server, {:cancel_wait, ref})
 
         case GenServer.call(server, {:lookup_decision, request_id}) do
@@ -219,6 +273,21 @@ defmodule Sentinel.Probe.SDK.Otlp.Receiver do
           :missing -> {:error, :timeout}
         end
     end
+  end
+
+  # A timeout that fired before it was disarmed must not stay in the caller's
+  # mailbox. `after 0` only inspects the mailbox; it does not wait.
+  defp flush_timeout(ref) do
+    receive do
+      {:decision_timeout, ^ref} -> :ok
+    after
+      0 -> :ok
+    end
+  end
+
+  defp send_after_timer(timeout_ms, ref) do
+    timer = Process.send_after(self(), {:decision_timeout, ref}, timeout_ms)
+    fn -> Process.cancel_timer(timer) end
   end
 
   defp accept_loop(listen, server) do

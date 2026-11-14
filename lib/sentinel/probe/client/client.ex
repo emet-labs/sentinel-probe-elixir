@@ -71,6 +71,8 @@ defmodule Sentinel.Probe.SDK.Client.Client do
   @doc """
   Swaps in a new `EventFilter`, reporting whether the store was actually updated.
 
+  Only a first filter or a strictly newer epoch updates it; an equal epoch is a
+  no-op and an older or epoch-less filter is refused (see `FilterStore.set/2`).
   The OTLP log receiver calls this when an `EventFilter` log arrives and a
   filter store is attached. A host can also call it directly.
   """

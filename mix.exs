@@ -23,7 +23,9 @@ defmodule Sentinel.Probe.SDK.MixProject do
     [
       # Finch needs to be started for the transport, but the SDK itself is
       # library code; the host starts the OTel exporter (ADR-0002). extra_applications
-      # are intentionally minimal.
+      # are intentionally minimal. The SDK's own tree only supervises the
+      # FilterStore writers (#464).
+      mod: {Sentinel.Probe.SDK.Application, []},
       extra_applications: [:logger]
     ]
   end
