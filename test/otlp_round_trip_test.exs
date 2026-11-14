@@ -30,6 +30,7 @@ defmodule Sentinel.Probe.SDK.OtlpRoundTripTest do
                "sagashop-payment"
              )
 
+    evaluations_settled(port)
     assert Receiver.verdicts(receiver) == []
 
     assert {:ok, _} =
@@ -39,6 +40,7 @@ defmodule Sentinel.Probe.SDK.OtlpRoundTripTest do
                "sagashop-order"
              )
 
+    evaluations_settled(port)
     verdicts = Receiver.verdicts(receiver)
     assert verdicts != []
     assert Enum.any?(verdicts, &String.contains?(&1.id, @spec_id))
@@ -64,6 +66,7 @@ defmodule Sentinel.Probe.SDK.OtlpRoundTripTest do
                "sagashop-order"
              )
 
+    evaluations_settled(port)
     refused = Receiver.verdicts(receiver)
     assert refused != []
     assert Enum.all?(refused, &(&1.outcome != :VERDICT_OUTCOME_SATISFY))
@@ -109,6 +112,47 @@ defmodule Sentinel.Probe.SDK.OtlpRoundTripTest do
              Http.post(origin(number), "/v1/filters/bootstrap-cat1", [], body,
                content_type: "application/json"
              )
+  end
+
+  # Periphery evaluates after it acknowledges an OTLP post, and pushes the
+  # Verdict from its evaluation worker (#454). Read `requested` once from
+  # GET /v1/evaluations/queue and poll until `completed` reaches it, so the
+  # receiver has seen every push the earlier posts caused.
+  defp evaluations_settled(port, target \\ nil, attempts \\ 400)
+
+  defp evaluations_settled(_port, target, attempts) when attempts <= 0 do
+    flunk("evaluations did not settle: completed never reached #{inspect(target)}")
+  end
+
+  defp evaluations_settled(%{number: number} = port, target, attempts) do
+    %{"requested" => requested, "completed" => completed, "failed_passes" => failed} =
+      queue_counters(number)
+
+    target = target || requested
+
+    if completed >= target do
+      # A failed pass still completes its requests; this stack never fails one.
+      assert failed == 0, "periphery reported #{failed} failed evaluation passes"
+      :ok
+    else
+      Process.sleep(10)
+      evaluations_settled(port, target, attempts - 1)
+    end
+  end
+
+  defp queue_counters(number) do
+    {:ok, socket} =
+      :gen_tcp.connect({127, 0, 0, 1}, number, [:binary, active: false, packet: :raw], 5_000)
+
+    request =
+      "GET /v1/evaluations/queue HTTP/1.1\r\nHost: 127.0.0.1:#{number}\r\n" <>
+        "Connection: close\r\n\r\n"
+
+    :ok = :gen_tcp.send(socket, request)
+    {:ok, header, body} = Http.read_message(socket)
+    _ = :gen_tcp.close(socket)
+    assert {:ok, 200} = Http.status_code(header)
+    Jason.decode!(body)
   end
 
   defp charge_span(event_id, order_id, status) do
