@@ -15,7 +15,7 @@ defmodule Sentinel.Probe.SDK.ConformanceSequenceCompletenessTest do
 
   defp cases do
     manifest = read("manifest-v1.json")
-    assert manifest["format_version"] == "1.3.0"
+    assert manifest["format_version"] == "1.4.0"
     [entry] = Enum.filter(manifest["suites"], &(&1["kind"] == "sequence_completeness"))
     suite = read(entry["path"])
     assert suite["format_version"] == "1.3.0"
