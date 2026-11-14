@@ -49,17 +49,19 @@ defmodule Sentinel.Probe.SDK.Emission.Processor do
   require Record
 
   # The OTel SDK's span and link records. Extracted at compile time from the
-  # opentelemetry dep's headers so `on_end/2` can read fields by name.
+  # opentelemetry dep's headers so `on_end/2` can read fields by name. `from_lib`
+  # resolves the header through the code path, so it also compiles when this SDK is
+  # itself a dependency (a path or Hex dep of a host), where there is no `./deps`.
   Record.defrecord(
     :span,
     :span,
-    Record.extract(:span, from: "deps/opentelemetry/include/otel_span.hrl")
+    Record.extract(:span, from_lib: "opentelemetry/include/otel_span.hrl")
   )
 
   Record.defrecord(
     :link,
     :link,
-    Record.extract(:link, from: "deps/opentelemetry/include/otel_span.hrl")
+    Record.extract(:link, from_lib: "opentelemetry/include/otel_span.hrl")
   )
 
   alias Sentinel.Model.V1.SequenceCoordinate
