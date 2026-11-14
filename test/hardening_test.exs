@@ -430,6 +430,51 @@ defmodule Sentinel.Probe.SDK.HardeningTest do
       assert Sequence.declaration(sequence).complete_through == 0
     end
 
+    for kind <- ["evidence_conflict", "identity_conflict"] do
+      test "a refused duplicate Event id (#{kind}) keeps the slot FAILED and is not retried",
+           %{sequence: sequence} do
+        message = "append_events conflicted: #{unquote(kind)}"
+
+        refusal =
+          {:ok,
+           <<0x0A, 2 + 2 + byte_size(message), 0x08, 0x01, 0x12, byte_size(message)>> <> message}
+
+        post = counting_post([{:ok, ""}, refusal, {:ok, ""}])
+
+        exporter =
+          exporter(sequence,
+            post: post,
+            batch_size: 1,
+            max_retained_failed: 10,
+            retry_interval_ms: 20
+          )
+
+        for _ <- 1..3, do: AsyncExporter.submit(exporter, item(sequence))
+        assert :ok = AsyncExporter.flush(exporter)
+        assert_received {:export_error, {:duplicate_event_id, ^message}}
+        refute_received {:export_error, _}
+        declaration = Sequence.declaration(sequence)
+        # Slots 1 and 3 exported, slot 2 FAILED: complete_through stops at 1.
+        assert {declaration.last_emitted, declaration.complete_through} == {3, 1}
+        # Not retried: exactly three posts, even past several retry-timer ticks and another flush.
+        Process.sleep(100)
+        assert :ok = AsyncExporter.flush(exporter)
+        for _ <- 1..3, do: assert_received({:post, 1, _})
+        refute_received {:post, _, _}
+        assert Sequence.declaration(sequence).complete_through == 1
+      end
+    end
+
+    test "slot_conflict also stays FAILED as a plain rejection", %{sequence: sequence} do
+      message = "append_events conflicted: slot_conflict"
+      body = <<0x0A, 2 + 2 + byte_size(message), 0x08, 0x01, 0x12, byte_size(message)>> <> message
+      exporter = exporter(sequence, post: counting_post([{:ok, body}]))
+      AsyncExporter.submit(exporter, item(sequence))
+      assert :ok = AsyncExporter.flush(exporter)
+      assert_received {:export_error, {:rejected_spans, 1}}
+      assert Sequence.declaration(sequence).complete_through == 0
+    end
+
     test "a permanent failure in a batch is isolated to the bad span", %{sequence: sequence} do
       post = fn _, _, spans, _ ->
         if Enum.any?(spans, &(&1.event_id == "bad")),

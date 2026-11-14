@@ -33,6 +33,18 @@ defmodule Sentinel.Probe.SDK.Otlp.AsyncExporter do
   for that span and is not retried. When a multi-span batch fails permanently
   it is re-sent one span at a time so one bad span cannot fail its neighbours.
 
+  ## Duplicate Event id policy
+
+  When Sentinel refuses a second delivery of an Event id it already holds
+  (`evidence_conflict` or `identity_conflict` in the `error_message`),
+  `:on_error` receives `{:duplicate_event_id, message}` (the reason
+  `duplicate-event-id`), the slot stays FAILED, `complete_through` never passes
+  it and nothing is retried: it is neither re-sent nor retained. The slot
+  number never reached Sentinel as an Event, so completeness through it would be
+  overstated; missing evidence never looks complete. Any other rejection
+  (`slot_conflict`, an admission refusal, a closed boundary) is
+  `{:rejected_spans, n}` and also stays FAILED.
+
   Failed slots that are worth retrying (transient failures and overflow drops;
   at most `:max_retained_failed`, oldest evicted) are re-sent every
   `:retry_interval_ms` and at `flush/2`, with one attempt each. A success marks
@@ -307,10 +319,17 @@ defmodule Sentinel.Probe.SDK.Otlp.AsyncExporter do
   end
 
   defp classify({:ok, body}) do
-    case PartialSuccess.rejected_spans(body) do
-      {:ok, 0} -> :ok
-      {:ok, rejected} -> {:permanent, {:rejected_spans, rejected}}
-      {:error, reason} -> {:permanent, {:undecodable_response, reason}}
+    case PartialSuccess.rejection(body) do
+      {:ok, 0, _message} ->
+        :ok
+
+      {:ok, rejected, message} ->
+        if PartialSuccess.duplicate_event_id?(message),
+          do: {:permanent, {:duplicate_event_id, message}},
+          else: {:permanent, {:rejected_spans, rejected}}
+
+      {:error, reason} ->
+        {:permanent, {:undecodable_response, reason}}
     end
   end
 

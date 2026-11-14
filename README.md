@@ -44,7 +44,10 @@ The SDK gives a BEAM Probe four things:
 The processor allocates at span start and stamps `sentinel.sequence.epoch` and
 `sentinel.sequence.number`. A host-stamped span keeps its slot. After the export,
 only HTTP 2xx with zero `partial_success.rejected_spans` marks the slot exported;
-a refused, failed or undecodable response leaves a hole. Hosts that export manually
+a refused, failed or undecodable response leaves a hole. A refused duplicate Event id
+(`evidence_conflict` or `identity_conflict`) also leaves the slot FAILED, is reported to
+`:on_error` as `{:duplicate_event_id, message}` (reason `duplicate-event-id`) and is not
+retried: `complete_through` never passes a slot whose Event Sentinel does not hold. Hosts that export manually
 use `allocate/1`, `mark_exported/2`, `mark_failed/2` and `mark_filtered/3`.
 
 `Sentinel.Probe.SDK.Otlp.Heartbeat` reports the allocator on `/v1/logs`:
