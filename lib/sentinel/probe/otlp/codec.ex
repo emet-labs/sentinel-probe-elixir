@@ -69,15 +69,21 @@ defmodule Sentinel.Probe.SDK.Otlp.Codec do
   @doc """
   Encodes ended spans as one uncompressed `ExportTraceServiceRequest`.
 
+  `opts[:resource_attributes]` is a list of `{key, value}` OTLP Resource
+  attributes (`service.name` and the like); a value is a string, boolean,
+  integer or float. With none, the request carries no Resource.
+
   The whole request fails when any span fails. Nothing in the bytes uses a
   span id as `sentinel.event.id` or as a causal predecessor.
   """
-  @spec encode_traces([Span.t()]) :: {:ok, binary()} | {:error, term()}
-  def encode_traces(spans) when is_list(spans) do
-    with {:ok, encoded} <- encode_each(spans, []) do
+  @spec encode_traces([Span.t()], keyword()) :: {:ok, binary()} | {:error, term()}
+  def encode_traces(spans, opts \\ []) when is_list(spans) and is_list(opts) do
+    with {:ok, encoded} <- encode_each(spans, []),
+         {:ok, resource} <- encode_resource(Keyword.get(opts, :resource_attributes, [])) do
       request = %Wire.ExportTraceServiceRequest{
         resource_spans: [
           %Wire.ResourceSpans{
+            resource: resource,
             scope_spans: [%Wire.ScopeSpans{spans: Enum.reverse(encoded)}]
           }
         ]
@@ -189,6 +195,37 @@ defmodule Sentinel.Probe.SDK.Otlp.Codec do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  defp encode_resource([]), do: {:ok, nil}
+
+  defp encode_resource(attributes) when is_list(attributes) do
+    attributes
+    |> Enum.reduce_while({:ok, []}, fn
+      {key, value}, {:ok, acc} when is_binary(key) and key != "" ->
+        case resource_value(value) do
+          {:ok, any} -> {:cont, {:ok, [kv(key, any) | acc]}}
+          :error -> {:halt, {:error, {:invalid_resource_attribute, key}}}
+        end
+
+      other, _acc ->
+        {:halt, {:error, {:invalid_resource_attribute, other}}}
+    end)
+    |> case do
+      {:ok, acc} -> {:ok, %Wire.Resource{attributes: Enum.reverse(acc)}}
+      error -> error
+    end
+  end
+
+  defp encode_resource(_), do: {:error, :invalid_resource_attributes}
+
+  defp resource_value(v) when is_binary(v), do: {:ok, string_any(v)}
+  defp resource_value(v) when is_boolean(v), do: {:ok, %Wire.AnyValue{value: {:bool_value, v}}}
+  defp resource_value(v) when is_integer(v), do: {:ok, int_any(v)}
+
+  defp resource_value(v) when is_float(v),
+    do: {:ok, %Wire.AnyValue{value: {:double_value, v}}}
+
+  defp resource_value(_), do: :error
 
   defp encode_span(%Span{} = span) do
     with {:ok, event} <- SpanToEvent.span_to_event(span),

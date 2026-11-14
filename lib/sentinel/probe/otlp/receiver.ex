@@ -1,6 +1,9 @@
 defmodule Sentinel.Probe.SDK.Otlp.Receiver do
   @moduledoc """
-  OTLP/HTTP log receiver bound to `127.0.0.1`.
+  OTLP/HTTP log receiver. It binds `127.0.0.1` on an ephemeral port unless
+  told otherwise (`:ip`, `:port`); a containerised Probe binds `{0, 0, 0, 0}`
+  and a fixed port so Sentinel can reach it. The receiver has no
+  authentication: bind a non-loopback address only on a network you trust.
 
   `POST /v1/logs` decodes `Verdict`, `EventFilter`, and `DecideResponse`.
   The body is protobuf bytes. Identity and gzip are accepted. An unspecified
@@ -27,7 +30,13 @@ defmodule Sentinel.Probe.SDK.Otlp.Receiver do
     filter_store: nil
   ]
 
-  @doc "Starts the receiver on `127.0.0.1` and an ephemeral port."
+  @doc """
+  Starts the receiver.
+
+    * `:ip` — the bind address as an `:inet` tuple or an address string
+      (`{127, 0, 0, 1}` by default; `{0, 0, 0, 0}` for a container).
+    * `:port` — the listen port (`0`, an ephemeral port, by default).
+  """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts)
@@ -85,34 +94,41 @@ defmodule Sentinel.Probe.SDK.Otlp.Receiver do
 
   @impl true
   def init(opts) do
-    ip = Keyword.get(opts, :ip, {127, 0, 0, 1})
+    with {:ok, ip} <- bind_ip(Keyword.get(opts, :ip, {127, 0, 0, 1})),
+         {:ok, port} <- bind_port(Keyword.get(opts, :port, 0)),
+         listen_opts = [:binary, packet: :raw, active: false, ip: ip, reuseaddr: true],
+         {:ok, listen} <- :gen_tcp.listen(port, listen_opts) do
+      {:ok, port} = :inet.port(listen)
+      parent = self()
 
-    if ip != {127, 0, 0, 1} do
-      {:stop, :log_receiver_binds_loopback}
+      acceptor =
+        spawn_link(fn ->
+          receive do
+            :go -> accept_loop(listen, parent)
+          end
+        end)
+
+      :ok = :gen_tcp.controlling_process(listen, acceptor)
+      send(acceptor, :go)
+      {:ok, %__MODULE__{listen: listen, port: port, acceptor: acceptor}}
     else
-      listen_opts = [:binary, packet: :raw, active: false, ip: ip, reuseaddr: true]
-
-      case :gen_tcp.listen(0, listen_opts) do
-        {:ok, listen} ->
-          {:ok, port} = :inet.port(listen)
-          parent = self()
-
-          acceptor =
-            spawn_link(fn ->
-              receive do
-                :go -> accept_loop(listen, parent)
-              end
-            end)
-
-          :ok = :gen_tcp.controlling_process(listen, acceptor)
-          send(acceptor, :go)
-          {:ok, %__MODULE__{listen: listen, port: port, acceptor: acceptor}}
-
-        {:error, reason} ->
-          {:stop, reason}
-      end
+      {:error, reason} -> {:stop, reason}
     end
   end
+
+  defp bind_ip(ip) when is_tuple(ip) and tuple_size(ip) in [4, 8], do: {:ok, ip}
+
+  defp bind_ip(host) when is_binary(host) do
+    case :inet.parse_address(String.to_charlist(host)) do
+      {:ok, ip} -> {:ok, ip}
+      {:error, _} -> {:error, {:invalid_bind_ip, host}}
+    end
+  end
+
+  defp bind_ip(other), do: {:error, {:invalid_bind_ip, other}}
+
+  defp bind_port(port) when is_integer(port) and port in 0..65_535, do: {:ok, port}
+  defp bind_port(other), do: {:error, {:invalid_bind_port, other}}
 
   @impl true
   def terminate(_reason, %__MODULE__{acceptor: acceptor}) do

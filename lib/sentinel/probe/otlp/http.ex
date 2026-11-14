@@ -37,6 +37,25 @@ defmodule Sentinel.Probe.SDK.Otlp.Http do
     end
   end
 
+  @max_error_body 512
+
+  @doc """
+  Renders an export error for a log line. An HTTP status error includes the
+  response body (truncated to #{@max_error_body} bytes) so a refusal says why.
+  """
+  @spec format_error(term()) :: String.t()
+  def format_error({:http_status, status, body}) when is_binary(body) do
+    text = body |> binary_part(0, min(byte_size(body), @max_error_body)) |> printable()
+    suffix = if byte_size(body) > @max_error_body, do: "...", else: ""
+    "HTTP #{status}: #{text}#{suffix}"
+  end
+
+  def format_error(reason), do: inspect(reason)
+
+  defp printable(bytes) do
+    if String.valid?(bytes) and String.printable?(bytes), do: bytes, else: inspect(bytes)
+  end
+
   @doc "Reads one HTTP/1.1 message from `socket`. The body is exactly Content-Length bytes."
   @spec read_message(port(), timeout()) :: {:ok, String.t(), binary()} | {:error, term()}
   def read_message(socket, timeout \\ @timeout) do

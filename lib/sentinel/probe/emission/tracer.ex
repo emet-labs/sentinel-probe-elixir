@@ -79,9 +79,10 @@ defmodule Sentinel.Probe.SDK.Emission.Tracer do
   `source_handle` is sent as `x-sentinel-source-handle`. A missing predecessor
   id fails the export and nothing is posted.
   """
-  @spec export_traces([Span.t()], String.t(), String.t()) :: {:ok, binary()} | {:error, term()}
-  def export_traces(spans, endpoint, source_handle) when is_list(spans) do
-    Exporter.export_traces(endpoint, source_handle, spans)
+  @spec export_traces([Span.t()], String.t(), String.t(), keyword()) ::
+          {:ok, binary()} | {:error, term()}
+  def export_traces(spans, endpoint, source_handle, opts \\ []) when is_list(spans) do
+    Exporter.export_traces(endpoint, source_handle, spans, opts)
   end
 
   @doc """

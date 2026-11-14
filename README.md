@@ -87,6 +87,22 @@ second signal. `shutdown/1` waits for a running report and sends a final declara
 which closes only if every allocated slot was exported. Let exports settle first on
 a clean exit. Both leave the GenServer inert for the supervisor to stop.
 
+## Hardened span export
+
+`Processor` is safe inside a host: `on_start/3` and `on_end/2` catch every error and exit, mark the slot
+failed, report to `:on_export_error` and a rate-limited log, and never raise. With `:otlp` configured the OTel
+provider starts a bounded `Otlp.AsyncExporter` (queue, worker, retry with backoff on transport errors, 5xx and
+429; failed slots are retried on a timer and at flush; an overflow drops the new Event and fails its slot).
+`AsyncExporter.shutdown(exporter, heartbeat: hb)` flushes before the final heartbeat.
+
+- `allow_unattributed_remote_parent: true` exports a span with a remote, non-Probe parent as a causal root (no
+  parent span id on the wire). A local parent without `sentinel.parent.event.id` is still refused.
+- `Propagation.inject_parent_event_id/2` / `extract_parent_event_id/1`: header `x-sentinel-parent-event-id`,
+  `tracestate` `sentinel=<eventId>` as the extract fallback.
+- `filter_store:` applies the held Event Filter on the span path (unselected Events mark their slot filtered).
+- `resource_attributes:` sets OTLP Resource attributes; `Receiver.start_link(ip: {0,0,0,0}, port: 4319)` binds
+  for a containerised Probe (default stays loopback, ephemeral port).
+
 ## Generated proto modules
 
 `gen/` is gitignored and produced by `tools/generate-elixir-sdk.sh`, mirroring

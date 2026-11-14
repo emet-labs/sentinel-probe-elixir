@@ -13,11 +13,20 @@ defmodule Sentinel.Probe.SDK.Otlp.Exporter do
 
   @handle "x-sentinel-source-handle"
 
-  @doc "Exports ended spans. A missing predecessor id fails the export."
-  @spec export_traces(String.t(), String.t(), [Span.t()]) :: {:ok, binary()} | {:error, term()}
-  def export_traces(endpoint, source_handle, spans)
+  @doc """
+  Exports ended spans. A missing predecessor id fails the export.
+
+  `opts[:resource_attributes]` is a list of `{key, value}` OTLP Resource
+  attributes (for example `[{"service.name", "shipping"}]`) sent on the
+  request's Resource. A non-2xx response is `{:error, {:http_status, status,
+  body}}` with the response body; `Sentinel.Probe.SDK.Otlp.Http.format_error/1`
+  renders it for logs.
+  """
+  @spec export_traces(String.t(), String.t(), [Span.t()], keyword()) ::
+          {:ok, binary()} | {:error, term()}
+  def export_traces(endpoint, source_handle, spans, opts \\ [])
       when is_binary(endpoint) and is_binary(source_handle) and is_list(spans) do
-    with {:ok, body} <- Codec.encode_traces(spans) do
+    with {:ok, body} <- Codec.encode_traces(spans, opts) do
       Http.post(endpoint, "/v1/traces", [{@handle, source_handle}], body)
     end
   end
