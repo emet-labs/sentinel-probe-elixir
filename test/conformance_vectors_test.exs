@@ -29,13 +29,14 @@ defmodule Sentinel.Probe.SDK.ConformanceVectorsTest do
   test "manifest suite registry fails closed" do
     manifest = @root |> Path.join("manifest-v1.json") |> File.read!() |> Jason.decode!()
 
-    assert manifest["format_version"] == "1.1.0"
+    assert manifest["format_version"] == "1.3.0"
 
     assert Enum.map(manifest["suites"], & &1["kind"]) == [
              "spec_match",
              "int128",
              "enforcement_gate",
-             "otlp_signal"
+             "otlp_signal",
+             "sequence_completeness"
            ]
   end
 

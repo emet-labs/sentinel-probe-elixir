@@ -37,6 +37,56 @@ The SDK gives a BEAM Probe four things:
 | `ids/ids.go`                     | `Sentinel.Probe.SDK.IDs`                      |
 | `internal/specmatch/specmatch.go`| `Sentinel.Probe.SDK.Internal.SpecMatch`       |
 
+## Sequence numbers and completeness
+
+`Sentinel.Probe.SDK.Emission.Sequence` is a GenServer, one per source. Start it with
+`Sequence.start_link/1` and pass its pid as `:allocator` to the emission processor.
+The processor allocates at span start and stamps `sentinel.sequence.epoch` and
+`sentinel.sequence.number`. A host-stamped span keeps its slot. After the export,
+only HTTP 2xx with zero `partial_success.rejected_spans` marks the slot exported;
+a refused, failed or undecodable response leaves a hole. Hosts that export manually
+use `allocate/1`, `mark_exported/2`, `mark_failed/2` and `mark_filtered/3`.
+
+`Sentinel.Probe.SDK.Otlp.Heartbeat` reports the allocator on `/v1/logs`:
+
+```elixir
+{:ok, heartbeat} = Heartbeat.start_link(
+  sequence: sequence,
+  otlp: %{endpoint: sentinel_url, source_handle: source_handle},
+  filter_epoch: fn -> Client.acknowledged_epoch(probe) end
+)
+```
+
+The host owns supervision and registration of the processor. Heartbeat reports every
+15 seconds by default; `:interval_ms` accepts `1000..59999`, or `0` for manual
+`report/1` only. `:now`, `:schedule` and `:send` inject clock, scheduler and transport.
+An absent Filter is acknowledged as epoch 0. `declare_idle/1` declares intentional
+idle; the next allocation or `declare_active/1` makes the source active again.
+
+`last_emitted` is the highest allocated number; `complete_through` advances only over
+the contiguous successfully exported prefix. An in-flight, failed or Filter-dropped
+slot holds the boundary back, so missing evidence remains Inconclusive. Filtered
+ranges retain the Filter epoch for #542, but are not yet declared on the wire and do
+not advance completeness. The helper does not retry exports.
+
+A report with equal counters declares the epoch closed. The allocator seals it, and
+the next allocation opens `max(previous epoch + 1, current Unix milliseconds)`.
+It never adds Events to a declared close. The heartbeat restates the previous epoch's
+final declaration before the new one until accepted under the current Filter epoch.
+Only the epoch current at Filter publication can settle Authoritative; Events that
+straddle a source's epoch roll may leave their Binding Inconclusive.
+
+On restart, use a strictly greater epoch. The default is Unix milliseconds; if the
+clock can step backwards, persist the last epoch and pass `:previous_epoch` to
+`Sequence.start_link/1`. A clock-derived epoch then advances past it; an explicit
+`:epoch` that is not greater is refused. Without persistence a regression is refused
+by Sentinel with HTTP 409.
+
+`Heartbeat.stop/1` cancels scheduling and sends nothing further, including a queued
+second signal. `shutdown/1` waits for a running report and sends a final declaration,
+which closes only if every allocated slot was exported. Let exports settle first on
+a clean exit. Both leave the GenServer inert for the supervisor to stop.
+
 ## Generated proto modules
 
 `gen/` is gitignored and produced by `tools/generate-elixir-sdk.sh`, mirroring

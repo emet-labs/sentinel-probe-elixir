@@ -14,9 +14,10 @@ defmodule Sentinel.Probe.SDK.Emission.Processor do
   It is deliberately a STATELESS processor: it exports no `start_link/1`, so the
   OTel tracer provider treats it as a plain module (no process is started).
   `span_to_event/1` is the pure, hermetically-tested core; this is the runtime
-  adapter and is not exercised by the test suite (which constructs `%Span{}`
-  directly), exactly as the Go analog's `SpanToEvent` is tested via
-  `tracetest.SpanStub` rather than a live TracerProvider.
+  adapter. The conversion tests construct `%Span{}` directly, exactly as the Go
+  analog's `SpanToEvent` is tested via `tracetest.SpanStub` rather than a live
+  TracerProvider; the Sequence allocation tests call `on_start/3` and `on_end/2`
+  on records built with this module's own `span/1` macro.
 
   ## Config
 
@@ -28,6 +29,19 @@ defmodule Sentinel.Probe.SDK.Emission.Processor do
     * `:acknowledged_epoch` — `nil`, an integer, or a function
     * `:on_malformed_link` — `(source, span_id) -> term()` or `nil`
     * `:on_event` — `(ProducerEvent.t() -> term())` or `nil`
+    * `:allocator` — `nil` or a `Sentinel.Probe.SDK.Emission.Sequence` (#461)
+
+  ## Sequence allocation
+
+  With `:allocator` and no `:sequence`, `on_start/3` allocates a slot and sets
+  `sentinel.sequence.epoch` and `sentinel.sequence.number` on the span record
+  when the span starts, before any Event Filter, unless the host already set
+  both (a slot reserved ahead of its Event). `on_end/2` exports that stamped
+  slot. With `:allocator`, the slot `on_end/2` exported is marked exported only
+  on HTTP 2xx with zero `rejected_spans`, and failed otherwise (a conversion
+  error, an HTTP failure, a rejected span or an undecodable response, each
+  reported through `:on_export_error`). Without `:otlp` the slot is left in
+  flight for the host to mark. Without `:allocator`, nothing here changes.
   """
 
   @behaviour :otel_span_processor
@@ -48,12 +62,51 @@ defmodule Sentinel.Probe.SDK.Emission.Processor do
     Record.extract(:link, from: "deps/opentelemetry/include/otel_span.hrl")
   )
 
-  alias Sentinel.Probe.SDK.Emission.{Span, SpanToEvent}
-  alias Sentinel.Probe.SDK.Otlp.Exporter
+  alias Sentinel.Model.V1.SequenceCoordinate
+  alias Sentinel.Probe.SDK.Emission.{Sequence, Span, SpanToEvent}
+  alias Sentinel.Probe.SDK.Otlp.{Exporter, PartialSuccess}
 
   @doc false
   @impl true
-  def on_start(_ctx, span, _config), do: span
+  def on_start(_ctx, span_record, config) do
+    allocator = config[:allocator]
+
+    if allocator != nil and config[:sequence] == nil and stamped_slot(span_record) == nil do
+      stamp(span_record, allocator)
+    else
+      span_record
+    end
+  end
+
+  # An allocation that fails (sequence-overflow) leaves the span unstamped, so
+  # on_end refuses it as missing a sequence instead of crashing the host.
+  defp stamp(span_record, allocator) do
+    case Sequence.allocate(allocator) do
+      {:ok, %{epoch: epoch, number: number}} ->
+        attributes =
+          span(span_record, :attributes)
+          |> then(&:otel_attributes.set(Span.attribute_sequence_epoch(), epoch, &1))
+          |> then(&:otel_attributes.set(Span.attribute_sequence_number(), number, &1))
+
+        span(span_record, attributes: attributes)
+
+      {:error, _} ->
+        span_record
+    end
+  end
+
+  defp stamped_slot(span_record) do
+    attrs_map = attributes_map(span(span_record, :attributes))
+
+    case {Map.get(attrs_map, Span.attribute_sequence_epoch()),
+          Map.get(attrs_map, Span.attribute_sequence_number())} do
+      {epoch, number} when is_integer(epoch) and is_integer(number) ->
+        %SequenceCoordinate{epoch: epoch, sequence: number}
+
+      _ ->
+        nil
+    end
+  end
 
   @doc false
   @impl true
@@ -71,7 +124,7 @@ defmodule Sentinel.Probe.SDK.Emission.Processor do
 
     span_struct = %Span{
       event_id: event_id,
-      sequence: resolve(config, :sequence),
+      sequence: sequence(config, span_record),
       schema_version: resolve(config, :schema_version),
       acknowledged_epoch: resolve(config, :acknowledged_epoch),
       claimed_capabilities: resolve(config, :claimed_capabilities) || [],
@@ -93,25 +146,45 @@ defmodule Sentinel.Probe.SDK.Emission.Processor do
             true
 
           :ok ->
+            mark(config, span_struct, &Sequence.mark_exported/2)
             if cb = config[:on_event], do: cb.(event)
             true
 
           {:error, reason} ->
+            mark(config, span_struct, &Sequence.mark_failed/2)
             if cb = config[:on_export_error], do: cb.(reason)
             false
         end
 
       {:error, reason} ->
+        mark(config, span_struct, &Sequence.mark_failed/2)
         if cb = config[:on_export_error], do: cb.(reason)
         false
     end
   end
 
+  # With an allocator and no configured :sequence, the span exports the slot
+  # on_start stamped.
+  defp sequence(config, span_record) do
+    configured = resolve(config, :sequence)
+
+    if configured == nil and config[:allocator] != nil,
+      do: stamped_slot(span_record),
+      else: configured
+  end
+
+  defp mark(%{allocator: allocator}, %Span{sequence: %SequenceCoordinate{} = coordinate}, mark)
+       when allocator != nil do
+    :ok = mark.(allocator, %{epoch: coordinate.epoch, number: coordinate.sequence})
+  end
+
+  defp mark(_config, _span, _mark), do: :ok
+
   defp export_otlp(config, span) do
     case config[:otlp] do
       %{endpoint: endpoint, source_handle: source_handle} ->
         case Exporter.export_traces(endpoint, source_handle, [span]) do
-          {:ok, _} -> :ok
+          {:ok, body} -> accepted(config, body)
           {:error, reason} -> {:error, reason}
         end
 
@@ -119,6 +192,18 @@ defmodule Sentinel.Probe.SDK.Emission.Processor do
         :skip
     end
   end
+
+  # Without an allocator any 2xx counts, as before. With one, the export
+  # succeeded only with zero rejected spans in a decodable response.
+  defp accepted(%{allocator: allocator}, body) when allocator != nil do
+    case PartialSuccess.rejected_spans(body) do
+      {:ok, 0} -> :ok
+      {:ok, rejected} -> {:error, {:rejected_spans, rejected}}
+      {:error, reason} -> {:error, {:undecodable_response, reason}}
+    end
+  end
+
+  defp accepted(_config, _body), do: :ok
 
   @doc false
   @impl true
