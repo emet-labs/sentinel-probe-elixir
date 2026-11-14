@@ -26,12 +26,17 @@ defmodule Sentinel.Probe.SDK.Otlp.AsyncExporter do
 
   ## Retries
 
-  A batch is retried with exponential backoff (`:backoff_ms`, doubling to
-  `:max_backoff_ms`) only for transient failures: a transport error, HTTP 5xx or
-  HTTP 429. After `:max_attempts` the slots are failed. Anything else (an
-  encode error, a 4xx, a rejected span, an undecodable response) is permanent
+  The Probe SDK retry policy (`sdk/README.md`, the same in every Probe SDK): a
+  batch is retried with exponential backoff and jitter (`:backoff_ms`, doubling
+  to `:max_backoff_ms`, each wait 50-100% of its step) only for transient
+  failures: a transport error and HTTP 408, 425, 429, 500, 502, 503 or 504. A
+  `Retry-After` on a 429 or 503 raises the wait, never past `:max_backoff_ms`.
+  After `:max_attempts` the slots are failed. Anything else (an encode error,
+  any other HTTP status, a rejected span, an undecodable response) is permanent
   for that span and is not retried. When a multi-span batch fails permanently
   it is re-sent one span at a time so one bad span cannot fail its neighbours.
+  A slot is marked exported only after a 2xx with zero `rejected_spans`, so
+  `complete_through` never passes a failed or in-flight export.
 
   ## Duplicate Event id policy
 
@@ -60,6 +65,8 @@ defmodule Sentinel.Probe.SDK.Otlp.AsyncExporter do
     * `:max_queue` (2048), `:batch_size` (64), `:max_attempts` (5), `:backoff_ms` (100),
       `:max_backoff_ms` (5000), `:retry_interval_ms` (30000, `0` disables the timer),
       `:max_retained_failed` (1024), `:log_interval_ms` (10000).
+    * `:sleep` — `(non_neg_integer -> term)`, the wait between attempts. Defaults to
+      `Process.sleep/1`; a test supplies its own.
     * `:post` — `(endpoint, handle, spans, opts -> {:ok, body} | {:error, term})`, the transport.
       Defaults to `Sentinel.Probe.SDK.Otlp.Exporter.export_traces/4`.
     * `:name` — a GenServer name.
@@ -76,6 +83,9 @@ defmodule Sentinel.Probe.SDK.Otlp.AsyncExporter do
   alias Sentinel.Probe.SDK.Emission.Sequence
   alias Sentinel.Probe.SDK.Internal.ErrorLog
   alias Sentinel.Probe.SDK.Otlp.{Exporter, Heartbeat, Http, PartialSuccess}
+
+  # The Probe SDK retry policy: HTTP statuses worth another attempt (a transport error is too).
+  @retryable_statuses [408, 425, 429, 500, 502, 503, 504]
 
   @type item :: %{
           required(:span) => Sentinel.Probe.SDK.Emission.Span.t(),
@@ -292,7 +302,9 @@ defmodule Sentinel.Probe.SDK.Otlp.AsyncExporter do
   defp send_with_retries(batch, config, attempts), do: attempt(batch, config, 1, attempts)
 
   defp attempt(batch, config, n, attempts) do
-    case classify(post(batch, config)) do
+    post_result = post(batch, config)
+
+    case classify(post_result) do
       :ok ->
         :ok
 
@@ -300,7 +312,7 @@ defmodule Sentinel.Probe.SDK.Otlp.AsyncExporter do
         transient
 
       {:transient, _} ->
-        Process.sleep(backoff(config, n))
+        config.sleep.(retry_delay(config, n, retry_after(post_result)))
         attempt(batch, config, n + 1, attempts)
 
       {:permanent, _} = permanent ->
@@ -336,14 +348,41 @@ defmodule Sentinel.Probe.SDK.Otlp.AsyncExporter do
   defp classify({:error, {:transport, _} = reason}), do: {:transient, reason}
 
   defp classify({:error, {:http_status, status, _body} = reason})
-       when status == 429 or status >= 500,
+       when status in @retryable_statuses,
+       do: {:transient, reason}
+
+  defp classify({:error, {:http_status, status, _body, %{retry_after_ms: _}} = reason})
+       when status in @retryable_statuses,
        do: {:transient, reason}
 
   defp classify({:error, reason}), do: {:permanent, reason}
   defp classify(other), do: {:permanent, {:unexpected_post_result, other}}
 
-  defp backoff(config, n) do
-    min(config.backoff_ms * Integer.pow(2, n - 1), config.max_backoff_ms)
+  defp retry_after({:error, {:http_status, status, _body, %{retry_after_ms: ms}}})
+       when status in [429, 503],
+       do: ms
+
+  defp retry_after(_result), do: nil
+
+  defp retry_delay(config, n, retry_after_ms) do
+    retry_delay_ms(n, config.backoff_ms, config.max_backoff_ms, retry_after_ms, :rand.uniform())
+  end
+
+  @doc false
+  # The wait after failed attempt `n` (1-based): `base * 2^(n-1)` capped at `cap`, with
+  # jitter (50-100% of the step, `jitter` in [0, 1]), raised to a server Retry-After
+  # when that asks for longer, and never longer than `cap`.
+  @spec retry_delay_ms(
+          pos_integer(),
+          non_neg_integer(),
+          non_neg_integer(),
+          non_neg_integer() | nil,
+          float()
+        ) :: non_neg_integer()
+  def retry_delay_ms(n, base, cap, retry_after_ms, jitter) do
+    step = min(base * Integer.pow(2, n - 1), cap)
+    jittered = trunc(step * (0.5 + jitter / 2))
+    min(cap, max(jittered, retry_after_ms || 0))
   end
 
   # -- outcomes (runs in the server) ----------------------------------------
@@ -435,6 +474,7 @@ defmodule Sentinel.Probe.SDK.Otlp.AsyncExporter do
       retry_interval_ms: non_negative!(opts, :retry_interval_ms, 30_000),
       max_retained_failed: non_negative!(opts, :max_retained_failed, 1024),
       log_interval_ms: non_negative!(opts, :log_interval_ms, 10_000),
+      sleep: Keyword.get(opts, :sleep, &Process.sleep/1),
       post: Keyword.get(opts, :post, &Exporter.export_traces/4)
     }
   end

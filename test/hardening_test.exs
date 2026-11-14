@@ -421,6 +421,111 @@ defmodule Sentinel.Probe.SDK.HardeningTest do
       assert Sequence.declaration(sequence).complete_through == 1
     end
 
+    for status <- [408, 425, 429, 500, 502, 503, 504] do
+      test "HTTP #{status} is retried, then exported", %{sequence: sequence} do
+        post = counting_post([{:error, {:http_status, unquote(status), "later"}}, {:ok, ""}])
+        exporter = exporter(sequence, post: post)
+        AsyncExporter.submit(exporter, item(sequence))
+        assert :ok = AsyncExporter.flush(exporter)
+        assert_received {:post, 1, _}
+        assert_received {:post, 1, _}
+        refute_received {:export_error, _}
+        assert Sequence.declaration(sequence).complete_through == 1
+      end
+    end
+
+    for status <- [400, 401, 403, 404, 409, 413, 422, 501] do
+      test "HTTP #{status} is final", %{sequence: sequence} do
+        post = counting_post([{:error, {:http_status, unquote(status), "no"}}, {:ok, ""}])
+        exporter = exporter(sequence, post: post)
+        AsyncExporter.submit(exporter, item(sequence))
+        assert :ok = AsyncExporter.flush(exporter)
+        assert_received {:post, 1, _}
+        refute_received {:post, 1, _}
+        assert_received {:export_error, {:http_status, unquote(status), "no"}}
+        assert Sequence.declaration(sequence).complete_through == 0
+      end
+    end
+
+    test "a retryable status that outlasts the attempts fails the slot", %{sequence: sequence} do
+      post = counting_post([{:error, {:http_status, 503, "busy"}}])
+      exporter = exporter(sequence, post: post, max_attempts: 3)
+      AsyncExporter.submit(exporter, item(sequence))
+      assert :ok = AsyncExporter.flush(exporter)
+      for _ <- 1..3, do: assert_received({:post, 1, _})
+      assert_received {:export_error, {:http_status, 503, "busy"}}
+      assert Sequence.declaration(sequence).complete_through == 0
+    end
+
+    for {status, header, expected} <- [{429, 2000, 2000}, {503, 3_600_000, 5000}] do
+      test "Retry-After on a #{status} is honored and capped", %{sequence: sequence} do
+        test = self()
+        error = {:http_status, unquote(status), "slow", %{retry_after_ms: unquote(header)}}
+        post = counting_post([{:error, error}, {:ok, ""}])
+
+        exporter =
+          exporter(sequence,
+            post: post,
+            backoff_ms: 100,
+            max_backoff_ms: 5000,
+            sleep: fn ms -> send(test, {:slept, ms}) end
+          )
+
+        AsyncExporter.submit(exporter, item(sequence))
+        assert :ok = AsyncExporter.flush(exporter)
+        assert_received {:slept, ms}
+        assert ms == unquote(expected)
+        assert Sequence.declaration(sequence).complete_through == 1
+      end
+    end
+
+    test "the retry delay is exponential with jitter and capped" do
+      delay = &AsyncExporter.retry_delay_ms/5
+      assert Enum.map(1..4, &delay.(&1, 100, 5000, nil, 1.0)) == [100, 200, 400, 800]
+      assert Enum.map(1..4, &delay.(&1, 100, 5000, nil, 0.0)) == [50, 100, 200, 400]
+      assert delay.(30, 100, 5000, nil, 1.0) == 5000
+      assert delay.(1, 100, 5000, 2000, 0.5) == 2000
+      assert delay.(1, 100, 5000, 3_600_000, 0.5) == 5000
+    end
+
+    test "Http.post surfaces Retry-After from a 429 and ignores it on a 500" do
+      for {status, expected} <- [
+            {429, {:http_status, 429, "", %{retry_after_ms: 7000}}},
+            {500, {:http_status, 500, ""}}
+          ] do
+        {:ok, listen} = :gen_tcp.listen(0, [:binary, active: false, ip: {127, 0, 0, 1}])
+        {:ok, port} = :inet.port(listen)
+
+        server =
+          Task.async(fn ->
+            {:ok, socket} = :gen_tcp.accept(listen)
+            {:ok, _request} = :gen_tcp.recv(socket, 0, 2000)
+
+            :ok =
+              :gen_tcp.send(
+                socket,
+                "HTTP/1.1 #{status} X\r\nRetry-After: 7\r\nContent-Length: 0\r\n\r\n"
+              )
+
+            :gen_tcp.close(socket)
+          end)
+
+        assert {:error, ^expected} = Http.post("http://127.0.0.1:#{port}", "/v1/traces", [], "x")
+        Task.await(server)
+        :gen_tcp.close(listen)
+      end
+    end
+
+    test "Retry-After is read as delta-seconds or an HTTP date" do
+      now = ~U[2015-10-21 07:28:00Z]
+      assert Http.retry_after_ms("2", now) == 2000
+      assert Http.retry_after_ms(" 3 ", now) == 3000
+      assert Http.retry_after_ms("Wed, 21 Oct 2015 07:28:05 GMT", now) == 5000
+      assert Http.retry_after_ms("Wed, 21 Oct 2015 07:27:00 GMT", now) == 0
+      assert Http.retry_after_ms("soon", now) == nil
+      assert Http.retry_after_ms(nil, now) == nil
+    end
+
     test "a rejected span marks the slot failed without retry", %{sequence: sequence} do
       post = counting_post([{:ok, Base.decode16!("0a020801", case: :lower)}])
       exporter = exporter(sequence, post: post)

@@ -94,8 +94,8 @@ a clean exit. Both leave the GenServer inert for the supervisor to stop.
 
 `Processor` is safe inside a host: `on_start/3` and `on_end/2` catch every error and exit, mark the slot
 failed, report to `:on_export_error` and a rate-limited log, and never raise. With `:otlp` configured the OTel
-provider starts a bounded `Otlp.AsyncExporter` (queue, worker, retry with backoff on transport errors, 5xx and
-429; failed slots are retried on a timer and at flush; an overflow drops the new Event and fails its slot).
+provider starts a bounded `Otlp.AsyncExporter` (queue, worker, retry with backoff and jitter on transport errors and HTTP
+408/425/429/500/502/503/504 (a `Retry-After` on a 429 or 503 is honored within `max_backoff_ms`; see `../README.md`); failed slots are retried on a timer and at flush; an overflow drops the new Event and fails its slot).
 `AsyncExporter.shutdown(exporter, heartbeat: hb)` flushes before the final heartbeat.
 
 - `allow_unattributed_remote_parent: true` exports a span with a remote, non-Probe parent as a causal root (no

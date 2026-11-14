@@ -50,6 +50,9 @@ defmodule Sentinel.Probe.SDK.Otlp.Http do
     "HTTP #{status}: #{text}#{suffix}"
   end
 
+  def format_error({:http_status, status, body, %{retry_after_ms: _}}),
+    do: format_error({:http_status, status, body})
+
   def format_error(reason), do: inspect(reason)
 
   defp printable(bytes) do
@@ -142,7 +145,7 @@ defmodule Sentinel.Probe.SDK.Otlp.Http do
       {:ok, header, body} ->
         case status_code(header) do
           {:ok, status} when status in 200..299 -> {:ok, body}
-          {:ok, status} -> {:error, {:http_status, status, body}}
+          {:ok, status} -> {:error, http_status_error(status, body, header)}
           :error -> {:error, :bad_http_status}
         end
 
@@ -150,6 +153,53 @@ defmodule Sentinel.Probe.SDK.Otlp.Http do
         {:error, {:transport, reason}}
     end
   end
+
+  # `{:http_status, status, body}`; a 429 or 503 that carries a usable Retry-After is
+  # `{:http_status, status, body, %{retry_after_ms: ms}}` so the retry policy can honor it.
+  defp http_status_error(status, body, header) when status in [429, 503] do
+    case header |> header_map() |> Map.get("retry-after") |> retry_after_ms() do
+      nil -> {:http_status, status, body}
+      ms -> {:http_status, status, body, %{retry_after_ms: ms}}
+    end
+  end
+
+  defp http_status_error(status, body, _header), do: {:http_status, status, body}
+
+  @months ~w(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec)
+
+  @doc """
+  Reads a `Retry-After` header value (delta-seconds or an IMF-fixdate HTTP-date)
+  as milliseconds from `now` (a `DateTime`, default the current time). `nil` when
+  absent or unparseable.
+  """
+  @spec retry_after_ms(String.t() | nil, DateTime.t()) :: non_neg_integer() | nil
+  def retry_after_ms(value, now \\ DateTime.utc_now())
+  def retry_after_ms(nil, _now), do: nil
+
+  def retry_after_ms(value, now) when is_binary(value) do
+    text = String.trim(value)
+
+    case Integer.parse(text) do
+      {seconds, ""} when seconds >= 0 -> seconds * 1000
+      _ -> http_date_ms(text, now)
+    end
+  end
+
+  defp http_date_ms(text, now) do
+    with [_day_name, day, month, year, time, "GMT"] <- String.split(text, " ", trim: true),
+         [hour, minute, second] <- String.split(time, ":"),
+         month when month in 0..11 <- Enum.find_index(@months, &(&1 == month)),
+         {:ok, date} <- Date.new(to_int(year), month + 1, to_int(day)),
+         {:ok, at} <- DateTime.new(date, Time.new!(to_int(hour), to_int(minute), to_int(second))) do
+      max(0, DateTime.diff(at, now, :millisecond))
+    else
+      _ -> nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp to_int(text), do: String.to_integer(text)
 
   defp read_headers(_socket, _buffer, _timeout, seen) when seen > @max_header do
     {:error, :header_too_large}

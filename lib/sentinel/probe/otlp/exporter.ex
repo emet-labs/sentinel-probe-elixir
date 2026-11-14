@@ -19,7 +19,8 @@ defmodule Sentinel.Probe.SDK.Otlp.Exporter do
   `opts[:resource_attributes]` is a list of `{key, value}` OTLP Resource
   attributes (for example `[{"service.name", "shipping"}]`) sent on the
   request's Resource. A non-2xx response is `{:error, {:http_status, status,
-  body}}` with the response body; `Sentinel.Probe.SDK.Otlp.Http.format_error/1`
+  body}}` with the response body (a 429 or 503 that sent a usable `Retry-After`
+  is `{:http_status, status, body, %{retry_after_ms: ms}}`); `Sentinel.Probe.SDK.Otlp.Http.format_error/1`
   renders it for logs.
   """
   @spec export_traces(String.t(), String.t(), [Span.t()], keyword()) ::
