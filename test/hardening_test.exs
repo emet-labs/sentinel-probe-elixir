@@ -820,3 +820,89 @@ defmodule Sentinel.Probe.SDK.HardeningTest do
     end
   end
 end
+
+defmodule Sentinel.Probe.SDK.FilterAcknowledgementTest do
+  use ExUnit.Case, async: true
+
+  alias Sentinel.Probe.SDK.Client.Client
+  alias Sentinel.Probe.SDK.Otlp.{Http, Receiver}
+
+  @golden Path.expand("../../../testdata/otlp/event-filter.bin", __DIR__)
+
+  defp post(receiver, body) do
+    {:ok, status} =
+      Http.post(
+        "http://127.0.0.1:#{Receiver.port(receiver)}",
+        "/v1/logs",
+        [],
+        body
+      )
+
+    status
+  end
+
+  defp client(receiver, handle) do
+    Client.new(
+      %Client.Config{
+        source_handle: handle,
+        sentinel_base_url: "http://unused",
+        initial_filter: nil
+      },
+      receiver
+    )
+  end
+
+  # The receiver hands Filters to the store's writer asynchronously, so the
+  # acknowledged epoch follows the push rather than coinciding with it.
+  defp await_epoch(client, expected, attempts \\ 200) do
+    cond do
+      Client.acknowledged_epoch(client) == expected ->
+        expected
+
+      attempts == 0 ->
+        Client.acknowledged_epoch(client)
+
+      true ->
+        Process.sleep(10)
+        await_epoch(client, expected, attempts - 1)
+    end
+  end
+
+  test "a pushed Event Filter log (the real wire shape) moves the acknowledged epoch" do
+    {:ok, receiver} = Receiver.start_link()
+    client = client(receiver, "ack-#{System.unique_integer([:positive])}")
+    assert Client.acknowledged_epoch(client) == nil
+
+    post(receiver, File.read!(@golden))
+    assert await_epoch(client, 9) == 9
+    assert Receiver.filters(receiver) |> hd() |> Map.get(:epoch) == 9
+  end
+
+  test "a Filter received before the store is attached is applied on attach" do
+    {:ok, receiver} = Receiver.start_link()
+    post(receiver, File.read!(@golden))
+    client = client(receiver, "ack-#{System.unique_integer([:positive])}")
+    assert await_epoch(client, 9) == 9
+  end
+
+  test "a restarted Probe restores the last pushed Filter from :persist_path" do
+    path =
+      Path.join(System.tmp_dir!(), "sentinel-filter-#{System.unique_integer([:positive])}.bin")
+
+    on_exit(fn -> File.rm(path) end)
+
+    {:ok, first} = Receiver.start_link(persist_path: path)
+    post(first, File.read!(@golden))
+    Receiver.stop(first)
+
+    {:ok, second} = Receiver.start_link(persist_path: path)
+    client = client(second, "ack-#{System.unique_integer([:positive])}")
+    assert await_epoch(client, 9) == 9
+  end
+
+  test "an unreadable :persist_path restores nothing" do
+    {:ok, receiver} = Receiver.start_link(persist_path: "/nonexistent-dir/none.bin")
+    client = client(receiver, "ack-#{System.unique_integer([:positive])}")
+    assert Client.acknowledged_epoch(client) == nil
+  end
+end

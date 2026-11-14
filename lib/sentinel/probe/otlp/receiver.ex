@@ -29,7 +29,8 @@ defmodule Sentinel.Probe.SDK.Otlp.Receiver do
     waiters: %{},
     filter_store: nil,
     writer_monitor: nil,
-    decision_timer: nil
+    decision_timer: nil,
+    persist_path: nil
   ]
 
   @typedoc """
@@ -49,6 +50,10 @@ defmodule Sentinel.Probe.SDK.Otlp.Receiver do
     * `:decision_timer` — replaces the timer `await_decision/3` arms for a
       wait (see `t:decision_timer/0`). The default is `Process.send_after/3`.
       A test supplies its own so a wait runs without a wall clock.
+    * `:persist_path` — a file the latest Event Filter is written to as it arrives and
+      restored from at start. Sentinel pushes a Filter only when one is published, so a
+      Probe that restarts would otherwise hold no Filter (and acknowledge epoch 0) until
+      the next publish. A missing or unreadable file restores nothing.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
@@ -131,10 +136,42 @@ defmodule Sentinel.Probe.SDK.Otlp.Receiver do
       :ok = :gen_tcp.controlling_process(listen, acceptor)
       send(acceptor, :go)
       timer = Keyword.get(opts, :decision_timer, &send_after_timer/2)
-      {:ok, %__MODULE__{listen: listen, port: port, acceptor: acceptor, decision_timer: timer}}
+      persist_path = Keyword.get(opts, :persist_path)
+
+      {:ok,
+       %__MODULE__{
+         listen: listen,
+         port: port,
+         acceptor: acceptor,
+         decision_timer: timer,
+         persist_path: persist_path,
+         filters: restore_filter(persist_path)
+       }}
     else
       {:error, reason} -> {:stop, reason}
     end
+  end
+
+  defp restore_filter(nil), do: []
+
+  defp restore_filter(path) do
+    case File.read(path) do
+      {:ok, bytes} when bytes != "" -> [Protobuf.decode(bytes, EventFilter)]
+      _ -> []
+    end
+  rescue
+    _ -> []
+  end
+
+  defp persist_filter(nil, _filter), do: :ok
+
+  defp persist_filter(path, filter) do
+    tmp = path <> ".tmp"
+    File.mkdir_p!(Path.dirname(path))
+    File.write!(tmp, IO.iodata_to_binary(Protobuf.encode(filter)))
+    File.rename!(tmp, path)
+  rescue
+    _ -> :ok
   end
 
   defp bind_ip(ip) when is_tuple(ip) and tuple_size(ip) in [4, 8], do: {:ok, ip}
@@ -238,6 +275,7 @@ defmodule Sentinel.Probe.SDK.Otlp.Receiver do
 
       {:event_filter, filter}, state ->
         if state.filter_store, do: FilterStore.set_async(state.filter_store, filter)
+        persist_filter(state.persist_path, filter)
         %{state | filters: [filter | state.filters]}
 
       {:decide, response}, state ->
