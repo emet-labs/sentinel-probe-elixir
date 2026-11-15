@@ -12,7 +12,7 @@ defmodule Sentinel.Probe.SDK.ConformanceDecisionWaitTest do
   alias Sentinel.Probe.SDK.Otlp.{Http, Receiver}
   alias Sentinel.Probe.V1.DecideRequest
 
-  @root Path.expand("../../../testdata/probe-sdk-conformance", __DIR__)
+  @root Path.expand("../testdata/probe-sdk-conformance", __DIR__)
 
   defp load(name), do: @root |> Path.join(name) |> File.read!() |> Jason.decode!()
 

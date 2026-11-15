@@ -83,7 +83,7 @@ defmodule Sentinel.Probe.SDK.OtlpReceiverTest do
   test "a golden event filter replaces the filter store", %{receiver: receiver} do
     config = %Client.Config{source_handle: "sagashop-order", sentinel_base_url: "http://127.0.0.1"}
     client = Client.new(config, receiver)
-    bytes = File.read!(Path.expand("../../../testdata/otlp/event-filter.bin", __DIR__))
+    bytes = File.read!(Path.expand("../testdata/otlp/event-filter.bin", __DIR__))
     assert {:ok, _} = post(receiver, bytes)
     assert [%_{} = filter] = Receiver.filters(receiver)
     applied(client.store)
@@ -91,7 +91,7 @@ defmodule Sentinel.Probe.SDK.OtlpReceiverTest do
   end
 
   test "a golden verdict is observed", %{receiver: receiver} do
-    bytes = File.read!(Path.expand("../../../testdata/otlp/verdict.bin", __DIR__))
+    bytes = File.read!(Path.expand("../testdata/otlp/verdict.bin", __DIR__))
     assert {:ok, _} = post(receiver, bytes)
     assert [%_{outcome: outcome}] = Receiver.verdicts(receiver)
     assert outcome != :VERDICT_OUTCOME_UNSPECIFIED

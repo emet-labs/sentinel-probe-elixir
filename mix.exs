@@ -2,7 +2,7 @@ defmodule Sentinel.Probe.SDK.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  @source_url "https://github.com/emet-labs/sentinel"
+  @source_url "https://github.com/emet-labs/sentinel-probe-elixir"
 
   def project do
     [
@@ -61,7 +61,7 @@ defmodule Sentinel.Probe.SDK.MixProject do
 
   defp package do
     [
-      licenses: ["AGPL-3.0"],
+      licenses: ["MPL-2.0"],
       # gen/ holds the generated proto modules that lib/ depends on (elixirc_paths above
       # compiles both). Hex's default file list omits it, which shipped a package that
       # failed to compile for its consumers; it is committed in the published mirror.

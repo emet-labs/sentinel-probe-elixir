@@ -9,7 +9,7 @@ defmodule Sentinel.Probe.SDK.ConformanceSequenceCompletenessTest do
   alias Sentinel.Probe.SDK.Int128
   alias Sentinel.Probe.SDK.Otlp.{Heartbeat, PartialSuccess}
 
-  @root Path.expand("../../../testdata/probe-sdk-conformance", __DIR__)
+  @root Path.expand("../testdata/probe-sdk-conformance", __DIR__)
 
   defp read(name), do: @root |> Path.join(name) |> File.read!() |> Jason.decode!()
 

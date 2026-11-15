@@ -7,7 +7,7 @@ defmodule Sentinel.Probe.SDK.ConformanceFilterStoreTest do
   alias Sentinel.Model.V1.{EventFilter, SpecificationFilter}
   alias Sentinel.Probe.SDK.Client.FilterStore
 
-  @root Path.expand("../../../testdata/probe-sdk-conformance", __DIR__)
+  @root Path.expand("../testdata/probe-sdk-conformance", __DIR__)
 
   defp load(name), do: @root |> Path.join(name) |> File.read!() |> Jason.decode!()
 

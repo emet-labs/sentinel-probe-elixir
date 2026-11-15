@@ -6,7 +6,7 @@ defmodule Sentinel.Probe.SDK.OtlpGoldenTest do
   alias Sentinel.Probe.SDK.Otlp.Codec
   alias Sentinel.Probe.V1.DecideResponse
 
-  @dir Path.expand("../../../testdata/otlp", __DIR__)
+  @dir Path.expand("../testdata/otlp", __DIR__)
 
   test "charge-ship golden carries the contract attributes" do
     {:ok, events} = Codec.decode_traces(File.read!(Path.join(@dir, "charge-ship.bin")))

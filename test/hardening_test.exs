@@ -932,7 +932,7 @@ defmodule Sentinel.Probe.SDK.FilterAcknowledgementTest do
   alias Sentinel.Probe.SDK.Client.Client
   alias Sentinel.Probe.SDK.Otlp.{Http, Receiver}
 
-  @golden Path.expand("../../../testdata/otlp/event-filter.bin", __DIR__)
+  @golden Path.expand("../testdata/otlp/event-filter.bin", __DIR__)
 
   defp post(receiver, body) do
     {:ok, status} =
